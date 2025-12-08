@@ -1,0 +1,10 @@
+[package]
+name = "spatch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nom = "8.0.0"
+
+[dev-dependencies]
+assert2 = "0.3"
