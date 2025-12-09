@@ -4,13 +4,25 @@ use nom::{
     bytes::complete::take_while1,
     character::complete::{char, multispace0},
     combinator::{all_consuming, map},
+    error::context,
     multi::{separated_list0, separated_list1},
     sequence::{delimited, preceded, separated_pair},
 };
 
 use super::{Segment, Spath};
 
-fn parse_path(input: &str) -> IResult<&str, Spath> {
+// /foo/bar/baz - allowed - simple path
+// foo/bar/bas - not allowed, missing leading `/`
+// /foo/ [ id=123 ] /bar - allowed - filter segment
+// /foo/ [ id=123, type=active ] /bar - allowed - multiple conditions in filter
+// /foo/ [ id=123 /bar - not allowed - missing closing `]` in filter
+// /foo//bar - not allowed - empty segment
+// /foo/ [ id=123, ] /bar - not allowed - trailing comma in filter
+// /foo/ [ =123 ] /bar - not allowed - missing key in condition
+// /foo/ [ id= ] /bar - not allowed - missing value in condition
+// /foo/ [ id=123 type=active ] /bar - not allowed - missing comma between conditions
+// /foo/ [ id=12/3 ] /bar - not allowed - invalid character '/' in value
+pub(crate) fn parse_path(input: &str) -> IResult<&str, Spath> {
     let (rest, segments): (&str, Vec<Segment>) = all_consuming(preceded(
         ws(char('/')),
         separated_list0(ws(char('/')), parse_segment),
@@ -29,9 +41,11 @@ where
 }
 
 fn parse_segment(input: &str) -> IResult<&str, super::Segment> {
-    // Placeholder implementation for segment parsing
-    // Ok((input, super::Segment::Field(input.to_string())))
-    alt((parse_filter_segment, ws(parse_key_segment))).parse(input)
+    context(
+        "segment",
+        alt((parse_filter_segment, ws(parse_key_segment))),
+    )
+    .parse(input)
 }
 
 fn parse_key_segment(input: &str) -> IResult<&str, Segment> {
@@ -214,7 +228,7 @@ mod tests {
         check!(rest == "");
         check!(spath.segments.len() == 3);
         check!(spath.segments[0] == Segment::Field(String::from("array")));
-        check!(spath.segments[1] == Segment::Index(0));
+        check!(spath.segments[1] == Segment::Field(String::from("0")));
         check!(spath.segments[2] == Segment::Field(String::from("item")));
     }
 

@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-nom = "8.0.0"
+nom = { version = "8.0.0", features = ["alloc"] }
+serde_json = "1.0.145"
 
 [dev-dependencies]
 assert2 = "0.3"
