@@ -36,6 +36,7 @@
             cargo-chef # Build dependendies to speed up docker build
             cargo-deny
             cargo-nextest # Cargo test runner
+            cargo-llvm-cov # Code coverage for Rust projects
 
             rust-analyzer
             rustup

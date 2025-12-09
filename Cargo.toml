@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4.5.53", features = ["derive", "env"] }
 nom = { version = "8.0.0", features = ["alloc"] }
 serde_json = "1.0.145"
+thiserror = "2.0.17"
 
 [dev-dependencies]
 assert2 = "0.3"

@@ -1,9 +1,18 @@
-use crate::path::Spath;
+mod ext;
 
-#[derive(Debug, PartialEq, Eq)]
+use crate::path::{Spath, SpathError};
+pub use ext::SerdeValueExt;
+use std::str::FromStr;
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ResolveError {
-    InvalidPath,
+    #[error("Invalid path format")]
+    InvalidPath(#[from] SpathError),
+
+    #[error("Field or item not found")]
     NotFound,
+
+    #[error("Type mismatch encountered during resolution")]
     TypeMismatch,
 }
 
@@ -74,25 +83,10 @@ fn value_matches_filter(val: &serde_json::Value, filter_value: &str) -> bool {
 }
 
 fn value_match_number(value: &serde_json::Number, filter_value: &str) -> bool {
-    if value.is_f64()
-        && let Ok(f) = filter_value.parse::<f64>()
-    {
-        return value.as_f64() == Some(f);
+    match serde_json::Number::from_str(filter_value) {
+        Ok(parsed) => &parsed == value,
+        Err(_) => false,
     }
-
-    if value.is_u64()
-        && let Ok(u) = filter_value.parse::<u64>()
-    {
-        return value.as_u64() == Some(u);
-    }
-
-    if value.is_i64()
-        && let Ok(i) = filter_value.parse::<i64>()
-    {
-        return value.as_i64() == Some(i);
-    }
-
-    false
 }
 
 fn value_match_bool(value: &bool, filter_value: &str) -> bool {
@@ -255,6 +249,32 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_filter_with_multiple_filters_and_matching_false_should_return_inner_value() {
+        let doc = json!({
+            "items": [
+                { "id": "foo", "isActive": true, "value": 1 },
+                { "id": "foo", "isActive": false, "value": 3 },
+                { "id": "bar", "isActive": false, "value": 2 }
+            ]
+        });
+        let path = Spath {
+            segments: vec![
+                Segment::Field("items".to_string()),
+                Segment::Filter(vec![
+                    ("id".to_string(), "foo".to_string()),
+                    ("isActive".to_string(), "false".to_string()),
+                ]),
+                Segment::Field("value".to_string()),
+            ],
+        };
+        let result = resolve(&doc, path);
+        check!(result.is_ok());
+        let result = result.unwrap();
+
+        check!(result == &json!(3));
+    }
+
+    #[test]
     fn test_resolve_with_field_segment_should_return_array_item_by_index() {
         let doc = json!({
             "items": [
@@ -277,6 +297,26 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_with_field_segment_not_matching_type_should_return_a_type_mismatch() {
+        let doc = json!({
+            "items": [
+                { "id": "foo", "value": 1 },
+                { "id": "bar", "value": 2 }
+            ]
+        });
+        let path = Spath {
+            segments: vec![
+                Segment::Field("items".to_string()),
+                Segment::Field("foo".to_string()),
+                Segment::Field("value".to_string()),
+            ],
+        };
+        let result = resolve(&doc, path);
+
+        check!(result == Err(ResolveError::TypeMismatch));
+    }
+
+    #[test]
     fn test_value_matches_filter() {
         let should_match = vec![
             (Value::String("test".to_string()), "test"),
@@ -284,7 +324,6 @@ mod tests {
             (Value::Bool(false), "false"),
             (Value::Number(Number::from_f64(3.001).unwrap()), "3.001"),
             (Value::Number(Number::from_f64(-3.001).unwrap()), "-3.001"),
-            (Value::Number(Number::from_f64(0.0).unwrap()), "0"),
             (Value::Number(Number::from_f64(0.0).unwrap()), "0.0"),
             (Value::Number(Number::from_f64(0.0).unwrap()), "0.000"),
             (Value::Number(Number::from_u128(1).unwrap()), "1"),
@@ -293,14 +332,10 @@ mod tests {
                 "18446744073709551615",
             ),
             (Value::Number(Number::from_u128(0).unwrap()), "0"),
-            (Value::Number(Number::from_u128(1).unwrap()), "01"),
             (Value::Number(Number::from_i128(1).unwrap()), "1"),
-            (Value::Number(Number::from_i128(1).unwrap()), "+1"),
             (Value::Number(Number::from_i128(-1).unwrap()), "-1"),
             (Value::Number(Number::from_i128(-0).unwrap()), "0"),
             (Value::Number(Number::from_i128(0).unwrap()), "0"),
-            (Value::Number(Number::from_i128(0).unwrap()), "-000"),
-            (Value::Number(Number::from_i128(0).unwrap()), "00000"),
             (
                 Value::Number(Number::from_i128(i64::MAX as i128).unwrap()),
                 "9223372036854775807",
@@ -328,13 +363,18 @@ mod tests {
             (Value::Null, "true"),
             (Value::Number(Number::from_f64(3.001).unwrap()), "3.01"),
             (Value::Number(Number::from_f64(-3.001).unwrap()), "3.001"),
+            (Value::Number(Number::from_f64(0.0).unwrap()), "0"),
+            (Value::Number(Number::from_u128(1).unwrap()), "01"),
             (
                 Value::Number(Number::from_u128(u64::MAX as u128).unwrap()),
                 "18446744073709551616",
             ),
+            (Value::Number(Number::from_i128(1).unwrap()), "+1"),
             (Value::Number(Number::from_i128(1).unwrap()), "++1"),
             (Value::Number(Number::from_i128(-1).unwrap()), "1"),
             (Value::Number(Number::from_i128(0).unwrap()), "--000"),
+            (Value::Number(Number::from_i128(0).unwrap()), "-000"),
+            (Value::Number(Number::from_i128(0).unwrap()), "00000"),
             (
                 Value::Number(Number::from_i128(i64::MAX as i128).unwrap()),
                 "9223372036854775808",

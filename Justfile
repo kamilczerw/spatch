@@ -11,3 +11,6 @@ test:
 test-watch:
   cargo watch -x "nextest run"
 
+coverage:
+  cargo llvm-cov nextest --open
+

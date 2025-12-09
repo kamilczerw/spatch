@@ -16,8 +16,12 @@ pub struct Spath {
     pub(crate) segments: Vec<Segment>,
 }
 
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum SpathError {
+    #[error("Invalid path format")]
     InvalidFormat,
+
+    #[error("Path cannot be empty")]
     EmptyPath,
 }
 
