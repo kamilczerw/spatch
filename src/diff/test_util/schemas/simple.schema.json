@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "properties": {
+    "foo": {
+      "type": "array",
+      "indexKey": "id",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "count": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "bar": {
+      "type": "number"
+    }
+  }
+}

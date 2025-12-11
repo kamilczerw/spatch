@@ -1,13 +1,13 @@
 mod ext;
 
-use crate::path::{Spath, SpathError};
+use crate::path::{PathError, Spath};
 pub use ext::SerdeValueExt;
 use std::str::FromStr;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ResolveError {
     #[error("Invalid path format")]
-    InvalidPath(#[from] SpathError),
+    InvalidPath(#[from] PathError),
 
     #[error("Field or item not found")]
     NotFound,
