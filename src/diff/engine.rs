@@ -171,13 +171,6 @@ fn diff_array_indexed(
         let child_path = path_pointer.push(crate::path::Segment::Field("-".to_owned()));
         patch_ops.push(super::PatchOp::add(child_path.clone(), element.clone()));
     }
-    // for i in min_len..len_right {
-    //     let child_path = path_pointer.push(crate::path::Segment::Field("-".to_owned()));
-    //     patch_ops.push(super::PatchOp::add(
-    //         child_path.clone(),
-    //         right_array[i].clone(),
-    //     ));
-    // }
 }
 
 #[cfg(test)]
@@ -493,9 +486,6 @@ mod tests {
 
         diff_recursive(&left, &right, None, &path_pos, &mut patch_ops);
 
-        // TODO: The result should be a replace of the whole object at index 1
-        // Currently the emitted patch is not minimal, but valid
-        // We might want to optimize this in the future
         let expected_patch = Patch::new(vec![PatchOp::add(
             path("/foo/-"),
             serde_json::json!({"id": "lol", "count": 10}),

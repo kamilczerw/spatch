@@ -36,9 +36,9 @@ pub fn diff(
     schema: Option<&serde_json::Value>,
 ) -> Patch {
     let mut patch_ops = Patch::default();
-    let mut path_pos = Spath::default();
+    let path_pos = Spath::default();
 
-    engine::diff_recursive(left, right, schema, &mut path_pos, &mut patch_ops);
+    engine::diff_recursive(left, right, schema, &path_pos, &mut patch_ops);
 
     patch_ops
 }
