@@ -16,6 +16,44 @@ pub enum ResolveError {
     TypeMismatch,
 }
 
+
+trait ValueAccess<'a> {
+    type Out;
+    type OutList;
+
+    fn is_object(&self) -> bool;
+    fn is_array(&self) -> bool;
+
+    fn get_key(self, key: &str) -> Option<Self::Out>;
+    fn get_index(self, index: usize) -> Option<Self::Out>;
+
+    fn as_array(self) -> Option<Self::OutList>;
+}
+
+impl<'a> ValueAccess<'a> for &'a serde_json::Value {
+    type Out = &'a serde_json::Value;
+    type OutList = &'a Vec<serde_json::Value>;
+
+    fn is_object(&self) -> bool { serde_json::Value::is_object(self) }
+    fn is_array(&self) -> bool { serde_json::Value::is_array(self) }
+    fn get_key(self, key: &str) -> Option<Self::Out> { self.get(key) }
+    fn get_index(self, index: usize) -> Option<Self::Out> { self.get(index) }
+    fn as_array(self) -> Option<Self::OutList> { self.as_array() }
+}
+
+impl<'a> ValueAccess<'a> for &'a mut serde_json::Value {
+    type Out = &'a mut serde_json::Value;
+    type OutList = &'a mut Vec<serde_json::Value>;
+
+    fn is_object(&self) -> bool { serde_json::Value::is_object(self) }
+    fn is_array(&self) -> bool { serde_json::Value::is_array(self) }
+    fn get_key(self, key: &str) -> Option<Self::Out> { self.get_mut(key) }
+    fn get_index(self, index: usize) -> Option<Self::Out> { self.get_mut(index) }
+    fn as_array(self) -> Option<Self::OutList> {
+        self.as_array_mut()
+    }
+}
+
 pub fn resolve(doc: &serde_json::Value, path: Spath) -> Result<&serde_json::Value, ResolveError> {
     let mut current = doc;
     for segment in path {
@@ -28,10 +66,13 @@ pub fn resolve(doc: &serde_json::Value, path: Spath) -> Result<&serde_json::Valu
     Ok(current)
 }
 
-fn resolve_field<'a>(
-    doc: &'a serde_json::Value,
+fn resolve_field<'a, A>(
+    doc: A,
     field: &str,
-) -> Result<&'a serde_json::Value, ResolveError> {
+) -> Result<A::Out, ResolveError>
+where
+    A: ValueAccess<'a>,
+ {
     if !doc.is_object() && !doc.is_array() {
         return Err(ResolveError::TypeMismatch);
     }
@@ -39,13 +80,13 @@ fn resolve_field<'a>(
     if doc.is_array() {
         // Try to parse field as an index
         if let Ok(index) = field.parse::<usize>() {
-            let arr = doc.as_array().unwrap();
-            arr.get(index).ok_or(ResolveError::NotFound)
+            doc.get_index(index).ok_or(ResolveError::NotFound)
+            // arr.get(index).ok_or(ResolveError::NotFound)
         } else {
             Err(ResolveError::TypeMismatch)
         }
     } else {
-        doc.get(field).ok_or(ResolveError::NotFound)
+        doc.get_key(field).ok_or(ResolveError::NotFound)
     }
 }
 

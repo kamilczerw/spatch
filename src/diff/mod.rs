@@ -3,7 +3,7 @@ mod patch_operations;
 #[cfg(test)]
 pub mod test_util;
 
-use std::ops::Deref;
+use std::ops::{Add, Deref};
 
 pub use patch_operations::PatchOp;
 
@@ -27,6 +27,16 @@ impl Deref for Patch {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Add for Patch {
+    type Output = Patch;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        let mut new_ops = self.0;
+        new_ops.extend(rhs.0);
+        Patch::new(new_ops)
     }
 }
 

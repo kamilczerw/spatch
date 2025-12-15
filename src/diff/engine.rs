@@ -16,7 +16,7 @@ pub(super) fn diff_recursive(
     schema: Option<&serde_json::Value>,
     path_pos: &Spath,
     patch_ops: &mut Patch,
-) {
+) -> Patch {
     match (left, right) {
         (Value::Object(left_map), Value::Object(right_map)) => {
             diff_object(left_map, right_map, schema, path_pos, patch_ops)
@@ -24,9 +24,15 @@ pub(super) fn diff_recursive(
         (Value::Array(left_array), Value::Array(right_array)) => {
             diff_array(left_array, right_array, schema, path_pos, patch_ops)
         }
-        (left, right) if left == right => {} // Values are equal, no diff needed
-        (_, right) => patch_ops.push(super::PatchOp::replace(path_pos.clone(), right.clone())),
+        (left, right) if left == right => { Patch::default() } // Values are equal, no diff needed
+        (_, right) => {
+            let patch = super::PatchOp::replace(path_pos.clone(), right.clone());
+            patch_ops.push(patch.clone());
+
+            Patch::new(vec![patch])
+        },
     }
+    
 }
 
 fn diff_object(
@@ -35,29 +41,47 @@ fn diff_object(
     schema: Option<&serde_json::Value>,
     path_pointer: &Spath,
     patch_ops: &mut Patch,
-) {
+) -> Patch {
+    let mut any_unchanged = false;
+    let mut patch = Patch::default();
     for (key, right_value) in right_map {
         let sub_schema = schema.and_then(|s| s.get("properties").and_then(|props| props.get(key)));
-        match left_map.get(key) {
+        let inner_patch = match left_map.get(key) {
             // If the key exists in both maps, recurse into the values
             Some(left_value) => {
                 let child_path = path_pointer.push(crate::path::Segment::Field(key.clone()));
-                diff_recursive(left_value, right_value, sub_schema, &child_path, patch_ops);
+                diff_recursive(left_value, right_value, sub_schema, &child_path, patch_ops)
             }
             // Otherwise, it's an addition
             None => {
                 let child_path = path_pointer.push(crate::path::Segment::Field(key.clone()));
-                patch_ops.push(super::PatchOp::add(child_path.clone(), right_value.clone()));
+                let patch_op = super::PatchOp::add(child_path.clone(), right_value.clone());
+
+                patch_ops.push(patch_op.clone());
+                Patch::new(vec![patch_op])
             }
+        };
+        if inner_patch.is_empty() {
+            any_unchanged = true;
         }
+        patch = patch + inner_patch
     }
 
+    let mut removals = vec![];
     for key in left_map.keys() {
         // If the key is missing in the right map, it's a removal
         if !right_map.contains_key(key) {
             let child_path = path_pointer.push(crate::path::Segment::Field(key.clone()));
-            patch_ops.push(super::PatchOp::remove(child_path.clone()));
+            let child_op = super::PatchOp::remove(child_path.clone());
+            patch_ops.push(child_op.clone());
+            removals.push(child_op);
         }
+    }
+    if !any_unchanged {
+        let value = serde_json::Value::Object(right_map.clone());
+        Patch::new(vec![super::PatchOp::replace(path_pointer.clone(), value)])
+    } else {
+        patch + Patch::new(removals)
     }
 }
 
@@ -67,7 +91,7 @@ fn diff_array(
     schema: Option<&Value>,
     path_pointer: &Spath,
     patch_ops: &mut Patch,
-) {
+) -> Patch {
     // TODO: emit warning if the schema is missing an index key when the schema is provided
     let index_key = schema.and_then(|s| {
         s.get(HASH_KEY_PROP_NAME)
@@ -77,7 +101,7 @@ fn diff_array(
     match (schema, index_key) {
         // If the schema specifies an index key, use keyed diffing
         (Some(schema), Some(ref key)) => {
-            diff_array_keyed(left, right, key, schema, path_pointer, patch_ops);
+            diff_array_keyed(left, right, key, schema, path_pointer, patch_ops)
         }
         // Otherwise, use index based diffing
         (_, _) => diff_array_indexed(left, right, schema, path_pointer, patch_ops),
@@ -91,7 +115,7 @@ fn diff_array_keyed(
     schema: &Value,
     path_pointer: &Spath,
     patch_ops: &mut Patch,
-) {
+) -> Patch {
     // Build maps: key -> element
     let map_left = build_key_map(left, index_key);
     let map_right = build_key_map(right, index_key);
@@ -142,7 +166,7 @@ fn diff_array_indexed(
     schema: Option<&Value>,
     path_pointer: &Spath,
     patch_ops: &mut Patch,
-) {
+) -> Patch {
     let len_left = left_array.len();
     let len_right = right_array.len();
     let min_len = len_left.min(len_right);
@@ -195,7 +219,7 @@ mod tests {
         let path_pos = Spath::default();
         let mut patch_ops = Patch::default();
 
-        diff_recursive(&left, &right, None, &path_pos, &mut patch_ops);
+        let patches = diff_recursive(&left, &right, None, &path_pos, &mut patch_ops);
 
         // No patch operations should be generated for equal values
         check!(patch_ops == Patch::default());
