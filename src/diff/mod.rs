@@ -6,10 +6,11 @@ pub mod test_util;
 use std::ops::{Add, Deref};
 
 pub use patch_operations::PatchOp;
+use serde::Serialize;
 
 use crate::path::Spath;
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Patch(Vec<PatchOp>);
 
 impl Patch {
