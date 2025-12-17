@@ -1,3 +1,6 @@
+use serde_json::Value;
+
+use crate::{patch::error::PatchError, path::Spath, resolve::resolve_mut};
 
 /// The "add" operation performs one of the following functions,
 /// depending upon what the target location references:
@@ -55,4 +58,349 @@
 /// { "q": { "bar": 2 } }
 ///
 /// because "a" does not exist.
-fn add()
+fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError> {
+    if path.is_empty() {
+        *doc = value;
+        return Ok(());
+    }
+
+    let parent = path.parent().ok_or(PatchError::TODO)?;
+
+    // If the target path does not exist, we need to resolve the parent and add the value
+    // to the correct field or index.
+    let target = resolve_mut(doc, &parent)?;
+    let field = path.field().ok_or(PatchError::TODO)?;
+
+    match target {
+        Value::Object(obj) => {
+            obj.insert(field, value);
+        }
+        Value::Array(arr) => {
+            if field == "-" {
+                arr.push(value);
+            } else {
+                let index: usize = field.parse().map_err(|_e| PatchError::TODO)?;
+
+                // Spec defines that index must not be greater than the number of elements
+                if index > arr.len() {
+                    return Err(PatchError::TODO);
+                }
+                // serde implements insert with shifting elements to the right
+                // which is the desired behavior according to the spec
+                arr.insert(index, value);
+            }
+        }
+        _ => return Err(PatchError::TODO),
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use assert2::{check, let_assert};
+    use serde_json::{from_str, json};
+
+    use super::*;
+
+    #[test]
+    fn add_an_object_at_root() {
+        let mut doc: Value = from_str(r#"{"a":1}"#).unwrap();
+
+        add(&mut doc, "".try_into().unwrap(), json!({"foo": "bar"})).unwrap();
+
+        check!(doc == json!({"foo": "bar"}));
+    }
+
+    #[test]
+    fn add_an_object_at_member_with_empty_name() {
+        let mut doc = json!({"a": 1});
+
+        add(&mut doc, "/".try_into().unwrap(), json!({"foo": "bar"})).unwrap();
+
+        check!(doc == json!({"a": 1, "": {"foo": "bar"}}));
+    }
+
+    #[test]
+    fn add_an_object_at_a_path() {
+        let mut doc: Value = from_str(r#"{"a":1}"#).unwrap();
+
+        add(&mut doc, "/a".try_into().unwrap(), json!({"foo": "bar"})).unwrap();
+
+        check!(doc == json!({"a": {"foo": "bar"}}));
+    }
+
+    #[test]
+    fn add_an_object_at_a_missing_path_with_existing_parent() {
+        let mut doc: Value = json!({"a": {"foo": 1}});
+
+        add(&mut doc, "/a/b".try_into().unwrap(), json!({"foo": "bar"})).unwrap();
+
+        check!(doc == json!({"a": {"b": {"foo": "bar"},"foo": 1}}));
+    }
+
+    #[test]
+    fn add_an_object_at_an_existing_path_with_existing_parent() {
+        let mut doc: Value = json!({"a": {"foo": 1, "bar": 123}});
+
+        add(
+            &mut doc,
+            "/a/bar".try_into().unwrap(),
+            json!({"foo": "bar"}),
+        )
+        .unwrap();
+
+        check!(doc == json!({"a": {"foo": 1, "bar": {"foo": "bar"}}}));
+    }
+
+    #[ignore]
+    #[test]
+    fn add_an_object_at_a_missing_path_with_empty_field() {
+        let mut doc: Value = json!({"a": {"foo": 1}});
+
+        add(&mut doc, "/a/".try_into().unwrap(), json!({"foo": "bar"})).unwrap();
+
+        check!(doc == json!({"a": {"foo": 1, "": {"foo": "bar"}}}));
+    }
+
+    #[test]
+    fn add_an_object_to_non_existent_path_should_fail() {
+        let mut doc: Value = from_str(r#"{"a":1}"#).unwrap();
+
+        let result = add(&mut doc, "/b/c".try_into().unwrap(), json!({"foo": "bar"}));
+
+        let_assert!(Err(PatchError::ResolveError(e)) = result);
+        check!(e.to_string() == "Field or item not found");
+    }
+
+    #[test]
+    fn add_to_array_at_specific_index() {
+        let mut doc: Value = from_str(r#"{"a":[1,2,3]}"#).unwrap();
+
+        add(&mut doc, "/a/1".try_into().unwrap(), json!(99)).unwrap();
+
+        check!(doc == json!({"a":[1,99,2,3]}));
+    }
+
+    #[test]
+    fn add_to_array_at_end() {
+        let mut doc: Value = from_str(r#"{"a":[1,2,3]}"#).unwrap();
+
+        add(&mut doc, "/a/3".try_into().unwrap(), json!(99)).unwrap();
+
+        check!(doc == json!({"a":[1,2,3,99]}));
+    }
+
+    #[test]
+    fn add_to_array_using_append() {
+        let mut doc: Value = from_str(r#"{"a":[1,2,3]}"#).unwrap();
+
+        add(&mut doc, "/a/-".try_into().unwrap(), json!(99)).unwrap();
+
+        check!(doc == json!({"a":[1,2,3,99]}));
+    }
+
+    #[test]
+    fn add_to_array_at_out_of_bounds_index_should_fail() {
+        let mut doc: Value = from_str(r#"{"a":[1,2,3]}"#).unwrap();
+
+        let result = add(&mut doc, "/a/5".try_into().unwrap(), json!(99));
+
+        let_assert!(Err(PatchError::TODO) = result);
+    }
+
+    // -----------------------------
+    // Root semantics: "" vs "/"
+    // -----------------------------
+
+    #[test]
+    fn add_with_empty_path_replaces_document() {
+        let mut doc: Value = json!({"a": 1});
+
+        add(&mut doc, "".try_into().unwrap(), json!(null)).unwrap();
+
+        check!(doc == json!(null));
+    }
+
+    #[test]
+    fn add_with_slash_path_adds_empty_key_on_object_root() {
+        let mut doc: Value = json!({"a": 1});
+
+        add(&mut doc, "/".try_into().unwrap(), json!({"foo": "bar"})).unwrap();
+
+        // JSON Pointer "/" means token "" at root object
+        check!(doc == json!({"a": 1, "": {"foo": "bar"}}));
+    }
+
+    // -----------------------------
+    // Parent must exist and be a container
+    // -----------------------------
+
+    #[test]
+    fn add_when_parent_is_scalar_should_fail() {
+        let mut doc: Value = json!({"a": 1});
+
+        // parent "/a" exists but is not object/array
+        let result = add(&mut doc, "/a/b".try_into().unwrap(), json!(123));
+
+        let_assert!(Err(PatchError::TODO) = result);
+    }
+
+    #[test]
+    fn add_to_root_when_doc_is_scalar_should_fail_for_non_empty_path() {
+        let mut doc: Value = json!(1);
+
+        // can't resolve parent "" into container; depends on resolve_mut behavior
+        let result = add(&mut doc, "/a".try_into().unwrap(), json!(2));
+
+        // likely TODO (or ResolveError) depending on your resolve_mut
+        check!(result.is_err());
+    }
+
+    // -----------------------------
+    // Object edge cases
+    // -----------------------------
+
+    #[test]
+    fn add_object_key_named_dash_is_normal_key() {
+        let mut doc: Value = json!({});
+
+        add(&mut doc, "/-".try_into().unwrap(), json!(123)).unwrap();
+
+        check!(doc == json!({"-": 123}));
+    }
+
+    #[test]
+    fn add_object_key_with_json_pointer_escaped_slash() {
+        // key is literally "a/b"
+        let mut doc: Value = json!({});
+
+        add(&mut doc, "/a~1b".try_into().unwrap(), json!(1)).unwrap();
+
+        check!(doc == json!({"a/b": 1}));
+    }
+
+    #[test]
+    fn add_object_key_with_json_pointer_escaped_tilde() {
+        // key is literally "a~b"
+        let mut doc: Value = json!({});
+
+        add(&mut doc, "/a~0b".try_into().unwrap(), json!(1)).unwrap();
+
+        check!(doc == json!({"a~b": 1}));
+    }
+
+    // If your Spath doesn't decode ~0/~1, the above two tests will fail,
+    // which is good: it tells you escaping isn't being handled.
+
+    // -----------------------------
+    // Array insertion edge cases
+    // -----------------------------
+
+    #[test]
+    fn add_to_array_at_index_zero_inserts_at_front() {
+        let mut doc: Value = json!({"a":[1,2,3]});
+
+        add(&mut doc, "/a/0".try_into().unwrap(), json!(99)).unwrap();
+
+        check!(doc == json!({"a":[99,1,2,3]}));
+    }
+
+    #[test]
+    fn add_to_empty_array_at_index_zero_is_ok() {
+        let mut doc: Value = json!({"a":[]});
+
+        add(&mut doc, "/a/0".try_into().unwrap(), json!(99)).unwrap();
+
+        check!(doc == json!({"a":[99]}));
+    }
+
+    #[test]
+    fn add_to_empty_array_using_append_is_ok() {
+        let mut doc: Value = json!({"a":[]});
+
+        add(&mut doc, "/a/-".try_into().unwrap(), json!(99)).unwrap();
+
+        check!(doc == json!({"a":[99]}));
+    }
+
+    #[test]
+    fn add_to_array_with_negative_index_should_fail() {
+        let mut doc: Value = json!({"a":[1,2,3]});
+
+        let result = add(&mut doc, "/a/-1".try_into().unwrap(), json!(99));
+
+        let_assert!(Err(PatchError::TODO) = result);
+    }
+
+    #[test]
+    fn add_to_array_with_non_numeric_index_should_fail() {
+        let mut doc: Value = json!({"a":[1,2,3]});
+
+        let result = add(&mut doc, "/a/notanumber".try_into().unwrap(), json!(99));
+
+        let_assert!(Err(PatchError::TODO) = result);
+    }
+
+    #[test]
+    fn add_to_array_with_float_index_should_fail() {
+        let mut doc: Value = json!({"a":[1,2,3]});
+
+        let result = add(&mut doc, "/a/1.0".try_into().unwrap(), json!(99));
+
+        let_assert!(Err(PatchError::TODO) = result);
+    }
+
+    #[test]
+    fn add_to_array_using_dash_not_at_last_segment_should_fail() {
+        let mut doc: Value = json!({"a":[{"b": 1}]});
+
+        // "-” only makes sense as the final token of the path.
+        // Here parent resolution will likely fail trying to resolve index "-"
+        let result = add(&mut doc, "/a/-/b".try_into().unwrap(), json!(99));
+
+        check!(result.is_err());
+    }
+
+    #[test]
+    fn add_to_array_parent_is_object_element() {
+        let mut doc: Value = json!({"a":[{"b": 1}]});
+
+        add(&mut doc, "/a/0/c".try_into().unwrap(), json!(2)).unwrap();
+
+        check!(doc == json!({"a":[{"b": 1, "c": 2}]}));
+    }
+
+    #[test]
+    fn add_to_array_element_parent_is_scalar_should_fail() {
+        let mut doc: Value = json!({"a":[1]});
+
+        // parent "/a/0" exists but is scalar
+        let result = add(&mut doc, "/a/0/b".try_into().unwrap(), json!(2));
+
+        let_assert!(Err(PatchError::TODO) = result);
+    }
+
+    // -----------------------------
+    // Path parsing / empty segments
+    // -----------------------------
+
+    #[test]
+    fn add_empty_field_key_under_object() {
+        let mut doc: Value = json!({"a": {}});
+
+        add(&mut doc, "/a/".try_into().unwrap(), json!(1)).unwrap();
+
+        check!(doc == json!({"a": {"": 1}}));
+    }
+
+    #[test]
+    fn add_double_slash_creates_empty_key_then_key() {
+        // Path "/a//b" => tokens ["a", "", "b"]
+        let mut doc: Value = json!({"a": { "": {} }});
+
+        add(&mut doc, "/a//b".try_into().unwrap(), json!(1)).unwrap();
+
+        check!(doc == json!({"a": { "": { "b": 1 }}}));
+    }
+}

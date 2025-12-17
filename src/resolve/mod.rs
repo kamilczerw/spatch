@@ -2,7 +2,7 @@ mod ext;
 
 use crate::path::{PathError, Spath};
 pub use ext::SerdeValueExt;
-use std::str::FromStr;
+use std::{ops::Deref, str::FromStr};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ResolveError {
@@ -12,67 +12,165 @@ pub enum ResolveError {
     #[error("Field or item not found")]
     NotFound,
 
-    #[error("Type mismatch encountered during resolution")]
-    TypeMismatch,
+    #[error("Type mismatch encountered during resolution, expected {expected}, found {actual}")]
+    TypeMismatch { expected: String, actual: String },
 }
 
-pub fn resolve(doc: &serde_json::Value, path: Spath) -> Result<&serde_json::Value, ResolveError> {
-    let mut current = doc;
+impl ResolveError {
+    pub fn type_mismatch(expected: &str, found: &str) -> Self {
+        ResolveError::TypeMismatch {
+            expected: expected.to_string(),
+            actual: found.to_string(),
+        }
+    }
+}
+
+pub trait ValueAccess<'a> {
+    type Out: Deref<Target = serde_json::Value> + 'a;
+    type ArrayIter: Iterator<Item = Self::Out> + 'a;
+
+    fn is_object(&self) -> bool;
+    fn is_array(&self) -> bool;
+
+    fn get_key(self, key: &str) -> Option<Self::Out>;
+    fn get_index(self, index: usize) -> Option<Self::Out>;
+
+    fn array_iter(self) -> Option<Self::ArrayIter>;
+}
+
+impl<'a> ValueAccess<'a> for &'a serde_json::Value {
+    type Out = &'a serde_json::Value;
+    type ArrayIter = std::slice::Iter<'a, serde_json::Value>;
+
+    fn is_object(&self) -> bool {
+        serde_json::Value::is_object(self)
+    }
+    fn is_array(&self) -> bool {
+        serde_json::Value::is_array(self)
+    }
+    fn get_key(self, key: &str) -> Option<Self::Out> {
+        self.get(key)
+    }
+    fn get_index(self, index: usize) -> Option<Self::Out> {
+        self.get(index)
+    }
+    fn array_iter(self) -> Option<Self::ArrayIter> {
+        self.as_array().map(|v| v.iter())
+    }
+}
+
+impl<'a> ValueAccess<'a> for &'a mut serde_json::Value {
+    type Out = &'a mut serde_json::Value;
+    type ArrayIter = std::slice::IterMut<'a, serde_json::Value>;
+
+    fn is_object(&self) -> bool {
+        serde_json::Value::is_object(self)
+    }
+    fn is_array(&self) -> bool {
+        serde_json::Value::is_array(self)
+    }
+    fn get_key(self, key: &str) -> Option<Self::Out> {
+        self.get_mut(key)
+    }
+    fn get_index(self, index: usize) -> Option<Self::Out> {
+        self.get_mut(index)
+    }
+    fn array_iter(self) -> Option<Self::ArrayIter> {
+        self.as_array_mut().map(|v| v.iter_mut())
+    }
+}
+
+pub fn resolve_ref<'a>(
+    doc: &'a serde_json::Value,
+    path: &Spath,
+) -> Result<&'a serde_json::Value, ResolveError> {
+    resolve_inner(doc, path)
+}
+
+pub fn resolve_mut<'a>(
+    doc: &'a mut serde_json::Value,
+    path: &'a Spath,
+) -> Result<&'a mut serde_json::Value, ResolveError> {
+    resolve_inner(doc, path)
+}
+
+fn resolve_inner<'a, 'b, A>(doc: A, path: &'b Spath) -> Result<A::Out, ResolveError>
+where
+    A: ValueAccess<'a, Out = A>, // output type is the same as input type
+    A: std::ops::Deref<Target = serde_json::Value>,
+{
+    let mut current: A::Out = doc;
     for segment in path {
         current = match segment {
-            crate::path::Segment::Field(field) => resolve_field(current, &field)?,
-            crate::path::Segment::Filter(conditions) => resolve_filter(current, &conditions)?,
+            crate::path::Segment::Field(field) => resolve_field(current, field)?,
+            crate::path::Segment::Filter(conditions) => resolve_filter(current, conditions)?,
         };
     }
 
     Ok(current)
 }
 
-fn resolve_field<'a>(
-    doc: &'a serde_json::Value,
-    field: &str,
-) -> Result<&'a serde_json::Value, ResolveError> {
+fn resolve_field<'a, A>(doc: A, field: &str) -> Result<A::Out, ResolveError>
+where
+    A: ValueAccess<'a>,
+    A: Deref<Target = serde_json::Value>,
+{
+    let type_name = value_type_desc(&doc);
     if !doc.is_object() && !doc.is_array() {
-        return Err(ResolveError::TypeMismatch);
+        return Err(ResolveError::type_mismatch("object or array", &type_name));
     }
 
     if doc.is_array() {
         // Try to parse field as an index
         if let Ok(index) = field.parse::<usize>() {
-            let arr = doc.as_array().unwrap();
-            arr.get(index).ok_or(ResolveError::NotFound)
+            doc.get_index(index).ok_or(ResolveError::NotFound)
         } else {
-            Err(ResolveError::TypeMismatch)
+            Err(ResolveError::type_mismatch(
+                "number",
+                &format!("string({field:?})"),
+            ))
         }
     } else {
-        doc.get(field).ok_or(ResolveError::NotFound)
+        doc.get_key(field).ok_or(ResolveError::NotFound)
     }
 }
 
 type FieldName = String;
 type FieldValue = String;
 
-fn resolve_filter<'a>(
-    doc: &'a serde_json::Value,
+fn resolve_filter<'a, A>(
+    doc: A,
     conditions: &[(FieldName, FieldValue)],
-) -> Result<&'a serde_json::Value, ResolveError> {
-    let doc = doc.as_array().ok_or(ResolveError::TypeMismatch)?;
+) -> Result<A::Out, ResolveError>
+where
+    A: ValueAccess<'a>,
+    A: Deref<Target = serde_json::Value>,
+{
+    let type_name = value_type_desc(&doc);
+    let arr = doc
+        .array_iter()
+        .ok_or(ResolveError::type_mismatch("array", &type_name))?;
 
-    doc.iter()
-        .find(|item| {
+    arr.into_iter()
+        .find_map(|item| {
             // Find an item that matches all conditions
-            conditions.iter().all(|(filter_key, filter_value)| {
-                item.get(filter_key)
-                    // We only find a match if the field exists and matches the filter value
-                    // is_some_and returns false if the field does not exist
-                    .is_some_and(|val| value_matches_filter(val, filter_value))
-            })
+            let matches = conditions.iter().all(|(k, v)| {
+                item.deref()
+                    .get(k) // use shared view for matching
+                    .is_some_and(|val| value_matches_filter(val, v))
+            });
+
+            // If matches, return ref to item
+            matches.then_some(item)
         })
         .ok_or(ResolveError::NotFound)
 }
 
-fn value_matches_filter(val: &serde_json::Value, filter_value: &str) -> bool {
-    match val {
+fn value_matches_filter<V>(val: V, filter_value: &str) -> bool
+where
+    V: Deref<Target = serde_json::Value>,
+{
+    match val.deref() {
         serde_json::Value::String(s) => s == filter_value,
         serde_json::Value::Number(n) => value_match_number(n, filter_value),
         serde_json::Value::Bool(b) => value_match_bool(b, filter_value),
@@ -90,7 +188,21 @@ fn value_match_number(value: &serde_json::Number, filter_value: &str) -> bool {
 }
 
 fn value_match_bool(value: &bool, filter_value: &str) -> bool {
-    matches!((value, filter_value), (true, "true") | (false, "false"))
+    matches!(
+        (value, (filter_value.to_lowercase()).as_ref()),
+        (true, "true") | (false, "false")
+    )
+}
+
+fn value_type_desc(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::Null => "null".to_string(),
+        serde_json::Value::Bool(b) => format!("boolean({b})"),
+        serde_json::Value::Number(n) => format!("number({n})"),
+        serde_json::Value::String(s) => format!("string({s:?})"),
+        serde_json::Value::Array(_) => "array".to_string(),
+        serde_json::Value::Object(_) => "object".to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -118,7 +230,7 @@ mod tests {
                 Segment::Field("c".to_string()),
             ],
         };
-        let result = resolve(&doc, path);
+        let result = resolve_inner(&doc, &path);
         check!(result.is_ok());
         let result = result.unwrap();
         check!(result == &json!(42));
@@ -139,7 +251,7 @@ mod tests {
                 Segment::Field("x".to_string()), // 'x' does not exist
             ],
         };
-        let result = resolve(&doc, path);
+        let result = resolve_inner(&doc, &path);
         check!(matches!(result, Err(ResolveError::NotFound)));
     }
 
@@ -157,9 +269,9 @@ mod tests {
                 Segment::Field("c".to_string()), // 'b' is not an object
             ],
         };
-        let result = resolve(&doc, path).unwrap_err();
+        let result = resolve_inner(&doc, &path).unwrap_err();
 
-        check!(result == ResolveError::TypeMismatch);
+        check!(result == ResolveError::type_mismatch("object or array", "number(42)"));
     }
 
     #[test]
@@ -175,9 +287,9 @@ mod tests {
                 Segment::Filter(vec![("id".to_string(), "foo".to_string())]),
             ],
         };
-        let result = resolve(&doc, path).unwrap_err();
+        let result = resolve_inner(&doc, &path).unwrap_err();
 
-        check!(result == ResolveError::TypeMismatch);
+        check!(result == ResolveError::type_mismatch("array", "object"));
     }
 
     #[test]
@@ -194,7 +306,7 @@ mod tests {
                 Segment::Filter(vec![("id".to_string(), "foo".to_string())]),
             ],
         };
-        let result = resolve(&doc, path);
+        let result = resolve_inner(&doc, &path);
         check!(result.is_ok());
         let result = result.unwrap();
 
@@ -216,7 +328,7 @@ mod tests {
                 Segment::Field("value".to_string()),
             ],
         };
-        let result = resolve(&doc, path);
+        let result = resolve_inner(&doc, &path);
         check!(result.is_ok());
         let result = result.unwrap();
 
@@ -241,7 +353,7 @@ mod tests {
                 Segment::Field("value".to_string()),
             ],
         };
-        let result = resolve(&doc, path);
+        let result = resolve_inner(&doc, &path);
         check!(result.is_ok());
         let result = result.unwrap();
 
@@ -267,7 +379,7 @@ mod tests {
                 Segment::Field("value".to_string()),
             ],
         };
-        let result = resolve(&doc, path);
+        let result = resolve_inner(&doc, &path);
         check!(result.is_ok());
         let result = result.unwrap();
 
@@ -289,7 +401,7 @@ mod tests {
                 Segment::Field("value".to_string()),
             ],
         };
-        let result = resolve(&doc, path);
+        let result = resolve_inner(&doc, &path);
         check!(result.is_ok());
         let result = result.unwrap();
 
@@ -311,9 +423,9 @@ mod tests {
                 Segment::Field("value".to_string()),
             ],
         };
-        let result = resolve(&doc, path);
+        let result = resolve_inner(&doc, &path);
 
-        check!(result == Err(ResolveError::TypeMismatch));
+        check!(result == Err(ResolveError::type_mismatch("number", "string(\"foo\")")));
     }
 
     #[test]
@@ -321,7 +433,9 @@ mod tests {
         let should_match = vec![
             (Value::String("test".to_string()), "test"),
             (Value::Bool(true), "true"),
+            (Value::Bool(true), "True"),
             (Value::Bool(false), "false"),
+            (Value::Bool(false), "False"),
             (Value::Number(Number::from_f64(3.001).unwrap()), "3.001"),
             (Value::Number(Number::from_f64(-3.001).unwrap()), "-3.001"),
             (Value::Number(Number::from_f64(0.0).unwrap()), "0.0"),
@@ -349,11 +463,9 @@ mod tests {
         let should_not_match = vec![
             (Value::String("test".to_string()), "Test"),
             (Value::String("test".to_string()), " test "),
-            (Value::Bool(true), "True"),
             (Value::Bool(true), "1"),
             (Value::Bool(true), ""),
             (Value::Bool(true), "foo"),
-            (Value::Bool(false), "False"),
             (Value::Bool(false), "0"),
             (Value::Bool(false), "-1"),
             // We don't support null matching
@@ -426,5 +538,53 @@ mod tests {
         check!(!value_match_bool(&false, "-1"));
         check!(!value_match_bool(&false, "foo"));
         check!(!value_match_bool(&false, ""));
+    }
+
+    #[test]
+    fn resolve_filter_should_return_mutable_value() {
+        let mut doc = json!({
+            "items": [
+                { "id": "foo", "value": 1 },
+                { "id": "bar", "value": 2 }
+            ]
+        });
+        let expected = json!({"id": "foo", "value": 42});
+        let path = Spath {
+            segments: vec![
+                Segment::Field("items".to_string()),
+                Segment::Filter(vec![("id".to_string(), "foo".to_string())]),
+            ],
+        };
+        let result = resolve_inner(&mut doc, &path);
+        check!(result.is_ok());
+        let result = result.unwrap();
+        result["value"] = json!(42);
+
+        check!(result == &expected);
+        check!(doc["items"][0] == expected);
+    }
+
+    #[test]
+    fn resolve_field_should_return_mutable_value() {
+        let mut doc = json!({
+            "items": [
+                { "id": "foo", "value": 1 },
+                { "id": "bar", "value": 2 }
+            ]
+        });
+        let expected = json!({"id": "foo", "value": 42});
+        let path = Spath {
+            segments: vec![
+                Segment::Field("items".to_string()),
+                Segment::Field("0".to_string()),
+            ],
+        };
+        let result = resolve_inner(&mut doc, &path);
+        check!(result.is_ok());
+        let result = result.unwrap();
+        result["value"] = json!(42);
+
+        check!(result == &expected);
+        check!(doc["items"][0] == expected);
     }
 }

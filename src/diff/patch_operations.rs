@@ -1,6 +1,6 @@
 use crate::path::Spath;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum PatchOp {
     Add {
         path: Spath,

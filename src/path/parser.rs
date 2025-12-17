@@ -2,12 +2,13 @@ use nom::{
     IResult, Parser,
     branch::alt,
     bytes::complete::take_while1,
-    character::complete::{char, multispace0},
-    combinator::{all_consuming, map},
-    error::context,
-    multi::{separated_list0, separated_list1},
+    character::complete::{char, multispace0, satisfy},
+    combinator::{eof, map, value},
+    error::{ParseError, context},
+    multi::{many0, separated_list0, separated_list1},
     sequence::{delimited, preceded, separated_pair},
 };
+use nom_language::error::VerboseError;
 
 use super::{Segment, Spath};
 
@@ -22,42 +23,54 @@ use super::{Segment, Spath};
 // /foo/ [ id= ] /bar - not allowed - missing value in condition
 // /foo/ [ id=123 type=active ] /bar - not allowed - missing comma between conditions
 // /foo/ [ id=12/3 ] /bar - not allowed - invalid character '/' in value
-pub(crate) fn parse_path(input: &str) -> IResult<&str, Spath> {
-    let (rest, segments): (&str, Vec<Segment>) = all_consuming(preceded(
-        ws(char('/')),
-        separated_list0(ws(char('/')), parse_segment),
-    ))
-    .parse(input)?;
-
-    Ok((rest, Spath { segments }))
-}
-
-// helper: wrap a parser and eat optional whitespace around it
-fn ws<'a, O, F>(inner: F) -> impl Parser<&'a str, Output = O, Error = nom::error::Error<&'a str>>
-where
-    F: Parser<&'a str, Output = O, Error = nom::error::Error<&'a str>>,
-{
-    delimited(multispace0, inner, multispace0)
-}
-
-fn parse_segment(input: &str) -> IResult<&str, super::Segment> {
+pub(crate) fn parse_path(input: &str) -> IResult<&str, Spath, VerboseError<&str>> {
     context(
-        "segment",
-        alt((parse_filter_segment, ws(parse_key_segment))),
+        "expected a path starting with '/' or empty input",
+        alt((
+            // exactly empty input
+            value(Spath { segments: vec![] }, eof),
+            // normal path: starts with '/'
+            |i| {
+                let (rest, segments) =
+                    preceded(char('/'), separated_list0(char('/'), parse_segment)).parse(i)?;
+                Ok((rest, Spath { segments }))
+            },
+        )),
     )
     .parse(input)
 }
 
-fn parse_key_segment(input: &str) -> IResult<&str, Segment> {
-    // Key: run until '/' or '['
-    let is_key_char = |c: char| c != '/' && c != '[';
-    map(take_while1(is_key_char), |s: &str| {
-        Segment::Field(s.trim().to_string())
-    })
+// helper: wrap a parser and eat optional whitespace around it
+fn ws<'a, O, F, E>(inner: F) -> impl Parser<&'a str, Output = O, Error = E>
+where
+    F: Parser<&'a str, Output = O, Error = E>,
+    E: ParseError<&'a str>,
+{
+    delimited(multispace0, inner, multispace0)
+}
+
+fn parse_segment(input: &str) -> IResult<&str, super::Segment, VerboseError<&str>> {
+    context("segment", alt((parse_filter_segment, parse_key_segment))).parse(input)
+}
+
+fn parse_key_segment(input: &str) -> IResult<&str, Segment, VerboseError<&str>> {
+    // One decoded char inside a key token.
+    // - `~` must be escaped (~0 or ~1), so we exclude raw '~' here.
+    // - '/' and '[' terminate the token.
+    let key_char = alt((
+        unescape_json_pointer,
+        satisfy(|c| c != '/' && c != '[' && c != '~'),
+    ));
+    context(
+        "key segment",
+        map(many0(key_char), |chars: Vec<char>| {
+            Segment::Field(chars.into_iter().collect::<String>())
+        }),
+    )
     .parse(input)
 }
 
-fn parse_filter_segment(input: &str) -> IResult<&str, Segment> {
+fn parse_filter_segment(input: &str) -> IResult<&str, Segment, VerboseError<&str>> {
     map(
         delimited(
             ws(char('[')),
@@ -69,7 +82,7 @@ fn parse_filter_segment(input: &str) -> IResult<&str, Segment> {
     .parse(input)
 }
 
-fn parse_condition(input: &str) -> IResult<&str, (String, String)> {
+fn parse_condition(input: &str) -> IResult<&str, (String, String), VerboseError<&str>> {
     map(
         separated_pair(ws(parse_ident), ws(char('=')), ws(parse_value)),
         |(k, v)| (k.trim().to_string(), v.trim().to_string()),
@@ -78,21 +91,34 @@ fn parse_condition(input: &str) -> IResult<&str, (String, String)> {
 }
 
 // identifier for field names in conditions
-fn parse_ident(input: &str) -> IResult<&str, &str> {
+fn parse_ident(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     let is_ident_char = |c: char| c.is_alphanumeric() || c == '_' || c == '-';
     take_while1(is_ident_char).parse(input)
 }
 
 // value inside conditions (simple unescaped token)
-fn parse_value(input: &str) -> IResult<&str, &str> {
+fn parse_value(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
     // can't contain '&' or ']' because they delimit conditions and filters
     let is_val_char = |c: char| c != ',' && c != ']';
     take_while1(is_val_char).parse(input)
 }
 
+fn unescape_json_pointer(input: &str) -> IResult<&str, char, VerboseError<&str>> {
+    let (rest, _) = char('~').parse(input)?;
+    let (rest, esc) = alt((char('0'), char('1'))).parse(rest)?;
+
+    let decoded_char = match esc {
+        '0' => '~',
+        '1' => '/',
+        _ => unreachable!(),
+    };
+
+    Ok((rest, decoded_char))
+}
+
 #[cfg(test)]
 mod tests {
-    use assert2::check;
+    use assert2::{check, let_assert};
 
     use super::*;
 
@@ -185,26 +211,39 @@ mod tests {
 
     #[test]
     fn test_parse_path_with_whitespaces() {
-        let input = "/ a / b / [ id = foo ] / c ";
+        let input = "/ a / b/ [ id = foo ] /c ";
         let result = parse_path(input);
         check!(result.is_ok());
         let (rest, spath) = result.unwrap();
         check!(rest == "");
         check!(spath.segments.len() == 4);
-        check!(spath.segments[0] == Segment::Field(String::from("a")));
-        check!(spath.segments[1] == Segment::Field(String::from("b")));
+        check!(spath.segments[0] == Segment::Field(String::from(" a ")));
+        check!(spath.segments[1] == Segment::Field(String::from(" b")));
         check!(spath.segments[2] == Segment::Filter(vec![("id".to_string(), "foo".to_string())]));
-        check!(spath.segments[3] == Segment::Field(String::from("c")));
+        check!(spath.segments[3] == Segment::Field(String::from("c ")));
     }
 
     #[test]
     fn test_parse_empty_path() {
+        let input = "";
+        let result = parse_path(input);
+
+        let_assert!(Ok((rest, spath)) = result);
+
+        check!(rest == "");
+        check!(spath.segments.len() == 0);
+    }
+
+    #[test]
+    fn test_parse_path_with_single_slash() {
         let input = "/";
         let result = parse_path(input);
-        check!(result.is_ok());
-        let (rest, spath) = result.unwrap();
+
+        let_assert!(Ok((rest, spath)) = result);
+
         check!(rest == "");
-        check!(spath.segments.is_empty());
+        check!(spath.segments.len() == 1);
+        check!(spath.segments[0] == Segment::Field(String::from("")));
     }
 
     #[test]
@@ -258,5 +297,56 @@ mod tests {
         let input = "[]";
         let result = parse_filter_segment(input);
         check!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_path_with_escaped_slash() {
+        let input = "/foo/a~1b/bar";
+        let result = parse_path(input);
+        let_assert!(Ok((rest, spath)) = result);
+
+        check!(rest == "");
+        check!(spath.segments.len() == 3);
+        check!(spath.segments[0] == Segment::Field(String::from("foo")));
+        check!(spath.segments[1] == Segment::Field(String::from("a/b")));
+        check!(spath.segments[2] == Segment::Field(String::from("bar")));
+    }
+
+    #[test]
+    fn test_parse_path_with_escaped_tilde() {
+        let input = "/foo/a~0b/bar";
+        let result = parse_path(input);
+        let_assert!(Ok((rest, spath)) = result);
+
+        check!(rest == "");
+        check!(spath.segments.len() == 3);
+        check!(spath.segments[0] == Segment::Field(String::from("foo")));
+        check!(spath.segments[1] == Segment::Field(String::from("a~b")));
+        check!(spath.segments[2] == Segment::Field(String::from("bar")));
+    }
+
+    #[test]
+    fn test_parse_path_with_multiple_escaped_chars() {
+        let input = "/~0foo~1bar/~1baz~0qux";
+        let result = parse_path(input);
+        let_assert!(Ok((rest, spath)) = result);
+
+        check!(rest == "");
+        check!(spath.segments.len() == 2);
+        check!(spath.segments[0] == Segment::Field(String::from("~foo/bar")));
+        check!(spath.segments[1] == Segment::Field(String::from("/baz~qux")));
+    }
+
+    #[test]
+    fn test_parse_path_with_multiple_slashes() {
+        let input = "/foo//bar";
+        let result = parse_path(input);
+
+        let_assert!(Ok((rest, spath)) = result);
+        check!(rest == "");
+        check!(spath.segments.len() == 3);
+        check!(spath.segments[0] == Segment::Field(String::from("foo")));
+        check!(spath.segments[1] == Segment::Field(String::from("")));
+        check!(spath.segments[2] == Segment::Field(String::from("bar")));
     }
 }
