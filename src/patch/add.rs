@@ -101,6 +101,8 @@ mod tests {
     use assert2::{check, let_assert};
     use serde_json::{from_str, json};
 
+    use crate::resolve::ResolveError;
+
     use super::*;
 
     #[test]
@@ -250,11 +252,23 @@ mod tests {
     fn add_to_root_when_doc_is_scalar_should_fail_for_non_empty_path() {
         let mut doc: Value = json!(1);
 
-        // can't resolve parent "" into container; depends on resolve_mut behavior
         let result = add(&mut doc, "/a".try_into().unwrap(), json!(2));
 
-        // likely TODO (or ResolveError) depending on your resolve_mut
         check!(result.is_err());
+    }
+
+    #[test]
+    fn add_with_sem_path_when_parent_is_scalar_should_fail() {
+        let mut doc: Value = json!([{"id": "foo", "value": 1}, {"id": "bar", "value": 2}]);
+
+        // parent "/a" exists but is not object/array
+        let result = add(
+            &mut doc,
+            "/[id=foo]/value/non-existing".try_into().unwrap(),
+            json!(123),
+        );
+
+        let_assert!(Err(PatchError::TODO) = result);
     }
 
     // -----------------------------
@@ -402,5 +416,110 @@ mod tests {
         add(&mut doc, "/a//b".try_into().unwrap(), json!(1)).unwrap();
 
         check!(doc == json!({"a": { "": { "b": 1 }}}));
+    }
+
+    // -----------------------------
+    // Semantic path tests
+    // -----------------------------
+    #[test]
+    fn add_using_semantic_path_should_succeed() {
+        let mut doc: Value = json!({
+            "items": [
+                { "id": "foo", "value": 1 },
+                { "id": "bar", "value": 2 }
+            ]
+        });
+
+        add(
+            &mut doc,
+            "/items/[id=foo]/new_field".try_into().unwrap(),
+            json!(99),
+        )
+        .unwrap();
+
+        check!(
+            doc == json!({
+                "items": [
+                    { "id": "foo", "value": 1, "new_field": 99 },
+                    { "id": "bar", "value": 2 }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn add_to_array_using_semantic_path_with_non_existing_array_member_should_fail() {
+        let mut doc: Value = json!({
+            "items": [
+                { "id": "foo", "value": 1 },
+                { "id": "bar", "value": 2 }
+            ]
+        });
+
+        let result = add(
+            &mut doc,
+            "/items/[id=baz]/new_field".try_into().unwrap(),
+            json!(99),
+        );
+
+        let_assert!(Err(PatchError::ResolveError(ResolveError::NotFound)) = result);
+    }
+
+    #[test]
+    fn add_using_semantic_path_with_non_existing_array_member_should_fail() {
+        let mut doc: Value = json!({
+            "items": [
+                { "id": "foo", "value": 1 },
+                { "id": "bar", "value": 2 }
+            ]
+        });
+
+        let result = add(&mut doc, "/items/[id=baz]".try_into().unwrap(), json!(99));
+
+        let_assert!(Err(PatchError::TODO) = result);
+    }
+
+    #[test]
+    fn add_using_semantic_path_with_multiple_filters_should_succeed() {
+        let mut doc: Value = json!({
+            "items": [
+                { "id": "foo", "value": 1 },
+                { "id": "bar", "value": 2 }
+            ]
+        });
+
+        let result = add(
+            &mut doc,
+            "/items/[id=foo, value=1]/baz".try_into().unwrap(),
+            json!(99),
+        );
+
+        let_assert!(Ok(()) = result);
+        check!(
+            doc == json!({
+                "items": [
+                    { "id": "foo", "value": 1, "baz": 99 },
+                    { "id": "bar", "value": 2 }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn add_using_semantic_path_with_multiple_filters_should_fail() {
+        let mut doc: Value = json!({
+            "items": [
+                { "id": "foo", "value": 1 },
+                { "id": "bar", "value": 2 }
+            ]
+        });
+
+        let result = add(
+            &mut doc,
+            "/items/[id=foo, value=2]/baz".try_into().unwrap(),
+            json!(99),
+        );
+
+        let_assert!(Err(PatchError::ResolveError(ResolveError::NotFound)) = result);
     }
 }
