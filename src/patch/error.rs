@@ -11,4 +11,7 @@ pub enum PatchError {
 
     #[error("Cannot move a value into one of its children")]
     CannotMoveIntoChild,
+
+    #[error("The values at the source and target paths are not equal")]
+    ValuesNotEqual,
 }
