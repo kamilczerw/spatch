@@ -18,9 +18,21 @@ pub enum TestScope {
     Patch,
 }
 
-pub fn load_json_patch_test_cases(scope: TestScope) -> Vec<JsonPatchTestCase> {
+pub enum TestVariant {
+    Tests,
+    SpecTests,
+}
+
+pub fn load_json_patch_test_cases(
+    scope: TestScope,
+    variant: TestVariant,
+) -> Vec<JsonPatchTestCase> {
+    let json_data = match variant {
+        TestVariant::Tests => super::JSON_PATCH_TESTS,
+        TestVariant::SpecTests => super::JSON_PATCH_SPEC_TESTS,
+    };
     let tests: Vec<serde_json::Value> =
-        serde_json::from_str(super::JSON_PATCH_TESTS).expect("Failed to parse JSON patch tests");
+        serde_json::from_str(json_data).expect("Failed to parse JSON patch tests");
 
     let mut test_cases = Vec::new();
 
@@ -90,5 +102,5 @@ fn should_be_disabled(scope: &TestScope, test: &serde_json::Value) -> bool {
 }
 
 pub fn load_json_patch_test_cases_for_diff() -> Vec<JsonPatchTestCase> {
-    load_json_patch_test_cases(TestScope::Diff)
+    load_json_patch_test_cases(TestScope::Diff, TestVariant::Tests)
 }

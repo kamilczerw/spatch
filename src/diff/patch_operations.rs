@@ -13,14 +13,14 @@ pub enum PatchOp {
         path: Spath,
         value: serde_json::Value,
     },
-    // Move {
-    //     from: Spath,
-    //     path: Spath,
-    // },
-    // Copy {
-    //     from: Spath,
-    //     path: Spath,
-    // },
+    Move {
+        from: Spath,
+        path: Spath,
+    },
+    Copy {
+        from: Spath,
+        path: Spath,
+    },
     Test {
         path: Spath,
         value: serde_json::Value,
@@ -73,6 +73,16 @@ impl serde::Serialize for PatchOp {
                 map.serialize_entry("op", "test")?;
                 map.serialize_entry("path", &path)?;
                 map.serialize_entry("value", value)?;
+            }
+            PatchOp::Move { from, path } => {
+                map.serialize_entry("op", "move")?;
+                map.serialize_entry("from", &from)?;
+                map.serialize_entry("path", &path)?;
+            }
+            PatchOp::Copy { from, path } => {
+                map.serialize_entry("op", "copy")?;
+                map.serialize_entry("from", &from)?;
+                map.serialize_entry("path", &path)?;
             }
         }
 
