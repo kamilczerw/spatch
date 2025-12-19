@@ -18,21 +18,35 @@ use crate::{diff::PatchOp, patch::error::PatchError};
 
 pub fn apply(doc: &Value, patch: &[PatchOp]) -> Result<Value, PatchError> {
     let mut doc = doc.clone();
+    let mut failures = Vec::new();
     for op in patch {
-        match op {
-            PatchOp::Add { path, value } => add(&mut doc, path.clone(), value.clone())?,
-            PatchOp::Remove { path } => remove(&mut doc, path.clone())?,
-            PatchOp::Replace { path, value } => replace(&mut doc, path.clone(), value.clone())?,
-            PatchOp::Move { from, path } => move_op(&mut doc, from.clone(), path.clone())?,
-            PatchOp::Copy { from, path } => copy(&mut doc, from.clone(), path.clone())?,
-            PatchOp::Test { path, value } => test(&mut doc, path.clone(), value.clone())?,
+        let result = match op {
+            PatchOp::Add { path, value } => add(&mut doc, path.clone(), value.clone()),
+            PatchOp::Remove { path } => remove(&mut doc, path.clone()),
+            PatchOp::Replace { path, value } => replace(&mut doc, path.clone(), value.clone()),
+            PatchOp::Move { from, path } => move_op(&mut doc, from.clone(), path.clone()),
+            PatchOp::Copy { from, path } => copy(&mut doc, from.clone(), path.clone()),
+            PatchOp::Test { path, value } => test(&mut doc, path.clone(), value.clone()),
+        };
+
+        match result {
+            Ok(_) => {}
+            Err(e) => failures.push(e),
         }
     }
-    Ok(doc)
+
+    if !failures.is_empty() {
+        Err(PatchError::MultipleErrors(failures))
+    } else {
+        Ok(doc)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use assert2::{check, let_assert};
+    use serde_json::json;
+
     use super::*;
     use crate::diff::{
         PatchOp,
@@ -40,86 +54,47 @@ mod tests {
     };
 
     fn map_op(op: &serde_json::Value) -> PatchOp {
-        match op.get("op").and_then(|v| v.as_str()) {
-            Some("add") => PatchOp::Add {
-                path: op
-                    .get("path")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                value: op.get("value").unwrap().clone(),
-            },
-            Some("remove") => PatchOp::Remove {
-                path: op
-                    .get("path")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-            },
-            Some("replace") => PatchOp::Replace {
-                path: op
-                    .get("path")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                value: op.get("value").unwrap().clone(),
-            },
-            Some("move") => PatchOp::Move {
-                from: op
-                    .get("from")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                path: op
-                    .get("path")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-            },
-            Some("copy") => PatchOp::Copy {
-                from: op
-                    .get("from")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                path: op
-                    .get("path")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-            },
-            Some("test") => PatchOp::Test {
-                path: op
-                    .get("path")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-                value: op.get("value").unwrap().clone(),
-            },
-            // Some("remove") => PatchOp::Remove {
-            _ => todo!(),
-        }
+        serde_json::from_value::<PatchOp>(op.clone()).unwrap()
     }
+
     #[test]
-    fn applying_patch_with_failing_test_should_not_apply_any_changes() {
-        // TODO: Implement this test based on RFC 6902 Section 5
-        // https://datatracker.ietf.org/doc/html/rfc6902#section-5
+    fn apply_with_failing_test_should_not_apply_any_changes() {
+        let doc = serde_json::json!({
+            "a": 1,
+            "b": 2
+        });
+        let patches = vec![
+            PatchOp::add("/c".try_into().unwrap(), json!({"foo": "bar"})),
+            PatchOp::test("/a".try_into().unwrap(), json!(2)), // This test will fail
+        ];
+
+        let_assert!(Err(PatchError::MultipleErrors(errors)) = apply(&doc, &patches));
+
+        check!(errors.len() == 1);
+    }
+
+    #[test]
+    fn apply_with_all_successful_operations_should_apply_all_changes() {
+        let doc = serde_json::json!({
+            "a": 1,
+            "b": 2
+        });
+        let patches = vec![
+            PatchOp::add("/c".try_into().unwrap(), json!({"foo": "bar"})),
+            PatchOp::test("/a".try_into().unwrap(), json!(1)), // This test will pass
+            PatchOp::replace("/b".try_into().unwrap(), json!({"baz": [1, 2, 3]})),
+        ];
+
+        let_assert!(Ok(resulting_doc) = apply(&doc, &patches));
+
+        check!(
+            resulting_doc
+                == json!({
+                    "a": 1,
+                    "b": {"baz": [1, 2, 3]},
+                    "c": {"foo": "bar"}
+                })
+        );
     }
 
     #[test]
@@ -144,7 +119,7 @@ mod tests {
                 } => {
                     let comment = comment.unwrap_or_default();
 
-                    let patches: Vec<PatchOp> = patch.iter().map(|op| map_op(op)).collect();
+                    let patches: Vec<PatchOp> = patch.iter().map(map_op).collect();
 
                     let result = apply(&doc, &patches);
 

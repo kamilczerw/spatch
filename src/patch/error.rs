@@ -14,4 +14,7 @@ pub enum PatchError {
 
     #[error("The values at the source and target paths are not equal")]
     ValuesNotEqual,
+
+    #[error("Multiple errors occurred: {0:?}")]
+    MultipleErrors(Vec<PatchError>),
 }

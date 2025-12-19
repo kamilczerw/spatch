@@ -1,6 +1,9 @@
+use serde::Deserialize;
+
 use crate::path::Spath;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
 pub enum PatchOp {
     Add {
         path: Spath,
@@ -40,9 +43,17 @@ impl PatchOp {
         PatchOp::Add { path, value }
     }
 
-    // pub fn move_op(from: Spath, path: Spath) -> Self {
-    //     PatchOp::Move { from, path }
-    // }
+    pub fn move_op(from: Spath, path: Spath) -> Self {
+        PatchOp::Move { from, path }
+    }
+
+    pub fn copy(from: Spath, path: Spath) -> Self {
+        PatchOp::Copy { from, path }
+    }
+
+    pub fn test(path: Spath, value: serde_json::Value) -> Self {
+        PatchOp::Test { path, value }
+    }
 }
 
 impl serde::Serialize for PatchOp {
