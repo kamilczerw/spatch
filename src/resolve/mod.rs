@@ -13,14 +13,19 @@ pub enum ResolveError {
     NotFound,
 
     #[error("Type mismatch encountered during resolution, expected {expected}, found {actual}")]
-    TypeMismatch { expected: String, actual: String },
+    TypeMismatch {
+        expected: String,
+        actual: String,
+        path: Spath,
+    },
 }
 
 impl ResolveError {
-    pub fn type_mismatch(expected: &str, found: &str) -> Self {
+    pub fn type_mismatch(expected: &str, found: &str, path: &Spath) -> Self {
         ResolveError::TypeMismatch {
             expected: expected.to_string(),
             actual: found.to_string(),
+            path: path.clone(),
         }
     }
 }
@@ -100,24 +105,33 @@ where
     A: std::ops::Deref<Target = serde_json::Value>,
 {
     let mut current: A::Out = doc;
+    let mut current_path = Spath { segments: vec![] };
     for segment in path {
         current = match segment {
-            crate::path::Segment::Field(field) => resolve_field(current, field)?,
-            crate::path::Segment::Filter(conditions) => resolve_filter(current, conditions)?,
+            crate::path::Segment::Field(field) => resolve_field(current, field, &current_path)?,
+            crate::path::Segment::Filter(conditions) => {
+                resolve_filter(current, conditions, &current_path)?
+            }
         };
+
+        current_path = current_path.push(segment.clone());
     }
 
     Ok(current)
 }
 
-fn resolve_field<'a, A>(doc: A, field: &str) -> Result<A::Out, ResolveError>
+fn resolve_field<'a, A>(doc: A, field: &str, path: &Spath) -> Result<A::Out, ResolveError>
 where
     A: ValueAccess<'a>,
     A: Deref<Target = serde_json::Value>,
 {
     let type_name = value_type_desc(&doc);
     if !doc.is_object() && !doc.is_array() {
-        return Err(ResolveError::type_mismatch("object or array", &type_name));
+        return Err(ResolveError::type_mismatch(
+            "object or array",
+            &type_name,
+            path,
+        ));
     }
 
     if doc.is_array() {
@@ -125,10 +139,7 @@ where
         if let Ok(index) = field.parse::<usize>() {
             doc.get_index(index).ok_or(ResolveError::NotFound)
         } else {
-            Err(ResolveError::type_mismatch(
-                "number",
-                &format!("string({field:?})"),
-            ))
+            Err(ResolveError::type_mismatch("object", &type_name, path))
         }
     } else {
         doc.get_key(field).ok_or(ResolveError::NotFound)
@@ -141,6 +152,7 @@ type FieldValue = String;
 fn resolve_filter<'a, A>(
     doc: A,
     conditions: &[(FieldName, FieldValue)],
+    path: &Spath,
 ) -> Result<A::Out, ResolveError>
 where
     A: ValueAccess<'a>,
@@ -149,7 +161,7 @@ where
     let type_name = value_type_desc(&doc);
     let arr = doc
         .array_iter()
-        .ok_or(ResolveError::type_mismatch("array", &type_name))?;
+        .ok_or(ResolveError::type_mismatch("array", &type_name, path))?;
 
     arr.into_iter()
         .find_map(|item| {
@@ -271,7 +283,14 @@ mod tests {
         };
         let result = resolve_inner(&doc, &path).unwrap_err();
 
-        check!(result == ResolveError::type_mismatch("object or array", "number(42)"));
+        check!(
+            result
+                == ResolveError::type_mismatch(
+                    "object or array",
+                    "number(42)",
+                    &("/a/b".try_into().unwrap())
+                )
+        );
     }
 
     #[test]
@@ -289,7 +308,9 @@ mod tests {
         };
         let result = resolve_inner(&doc, &path).unwrap_err();
 
-        check!(result == ResolveError::type_mismatch("array", "object"));
+        check!(
+            result == ResolveError::type_mismatch("array", "object", &("/a".try_into().unwrap()))
+        );
     }
 
     #[test]
@@ -425,7 +446,14 @@ mod tests {
         };
         let result = resolve_inner(&doc, &path);
 
-        check!(result == Err(ResolveError::type_mismatch("number", "string(\"foo\")")));
+        check!(
+            result
+                == Err(ResolveError::type_mismatch(
+                    "object",
+                    "array",
+                    &("/items".try_into().unwrap())
+                ))
+        );
     }
 
     #[test]

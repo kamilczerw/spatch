@@ -1,5 +1,11 @@
 mod add;
 mod error;
+mod remove;
+mod replace;
+
+pub use add::add;
+pub use remove::remove;
+pub use replace::replace;
 
 #[cfg(test)]
 mod tests {

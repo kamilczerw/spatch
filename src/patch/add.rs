@@ -58,7 +58,7 @@ use crate::{patch::error::PatchError, path::Spath, resolve::resolve_mut};
 /// { "q": { "bar": 2 } }
 ///
 /// because "a" does not exist.
-fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError> {
+pub fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError> {
     if path.is_empty() {
         *doc = value;
         return Ok(());
@@ -66,8 +66,6 @@ fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError> {
 
     let parent = path.parent().ok_or(PatchError::TODO)?;
 
-    // If the target path does not exist, we need to resolve the parent and add the value
-    // to the correct field or index.
     let target = resolve_mut(doc, &parent)?;
     let field = path.field().ok_or(PatchError::TODO)?;
 
@@ -155,7 +153,6 @@ mod tests {
         check!(doc == json!({"a": {"foo": 1, "bar": {"foo": "bar"}}}));
     }
 
-    #[ignore]
     #[test]
     fn add_an_object_at_a_missing_path_with_empty_field() {
         let mut doc: Value = json!({"a": {"foo": 1}});

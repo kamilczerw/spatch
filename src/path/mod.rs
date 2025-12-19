@@ -105,6 +105,10 @@ impl Spath {
             }
         })
     }
+
+    pub fn last_segment(&self) -> Option<&Segment> {
+        self.segments.last()
+    }
 }
 
 impl Display for Spath {

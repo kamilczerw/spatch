@@ -5,4 +5,7 @@ pub enum PatchError {
 
     #[error("TODO: implement PatchError variant")]
     TODO,
+
+    #[error("Cannot remove the root of the document")]
+    CannotRemoveRoot,
 }
