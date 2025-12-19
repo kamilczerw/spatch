@@ -109,6 +109,20 @@ impl Spath {
     pub fn last_segment(&self) -> Option<&Segment> {
         self.segments.last()
     }
+
+    pub fn is_parent_of(&self, other: &Spath) -> bool {
+        if self.segments.len() >= other.segments.len() {
+            return false;
+        }
+
+        for (seg_self, seg_other) in self.segments.iter().zip(other.segments.iter()) {
+            if seg_self != seg_other {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 impl Display for Spath {
@@ -233,5 +247,34 @@ mod tests {
         let parent = spath.parent();
 
         check!(parent == None);
+    }
+
+    #[test]
+    fn is_parent_of_should_work_correctly() {
+        let parent = Spath {
+            segments: vec![
+                Segment::Field("a".to_string()),
+                Segment::Field("b".to_string()),
+            ],
+        };
+
+        let child = Spath {
+            segments: vec![
+                Segment::Field("a".to_string()),
+                Segment::Field("b".to_string()),
+                Segment::Field("c".to_string()),
+            ],
+        };
+
+        let non_child = Spath {
+            segments: vec![
+                Segment::Field("a".to_string()),
+                Segment::Field("x".to_string()),
+            ],
+        };
+
+        check!(parent.is_parent_of(&child));
+        check!(!parent.is_parent_of(&non_child));
+        check!(!child.is_parent_of(&parent));
     }
 }

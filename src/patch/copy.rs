@@ -13,6 +13,6 @@
 ///
 /// This operation is functionally identical to an "add" operation at the
 /// target location using the value specified in the "from" member.
-fn copy() {
+pub fn copy() {
     // Implementation goes here
 }

@@ -8,4 +8,7 @@ pub enum PatchError {
 
     #[error("Cannot remove the root of the document")]
     CannotRemoveRoot,
+
+    #[error("Cannot move a value into one of its children")]
+    CannotMoveIntoChild,
 }
