@@ -3,7 +3,7 @@ use serde_json::Value;
 use crate::{
     patch::error::PatchError,
     path::{Segment, Spath},
-    resolve::{ResolveError, resolve_mut},
+    resolve::{ResolveError, resolve_mut, value_type_desc},
 };
 
 /// The "remove" operation removes the value at the target location.
@@ -21,31 +21,33 @@ pub fn remove(doc: &mut Value, path: Spath) -> Result<(), PatchError> {
         return Err(PatchError::CannotRemoveRoot);
     }
 
-    let parent = path.parent().ok_or(PatchError::TODO)?;
+    let parent = path.parent().ok_or(PatchError::missing_parent(&path))?;
 
     let target = resolve_mut(doc, &parent)?;
 
     match target {
         Value::Object(map) => {
-            let field = path.field().ok_or(PatchError::TODO)?; // TODO: This should be a
-            // type mismatch
-            map.remove(&field).ok_or(PatchError::TODO)?;
+            let field = path.field().ok_or(PatchError::missing_final_token(&path))?;
+            map.remove(&field)
+                .ok_or(PatchError::target_not_found(&path))?;
         }
         Value::Array(arr) => {
             let segment = path.last_segment().ok_or(PatchError::CannotRemoveRoot)?;
             let index: usize = match segment {
-                Segment::Field(field) => field.parse().map_err(|_| PatchError::TODO)?,
+                Segment::Field(field) => field
+                    .parse()
+                    .map_err(|_| PatchError::invalid_array_index_token(&path, field))?,
                 Segment::Filter(filters) => find_array_index(arr, filters)
                     .ok_or(PatchError::ResolveError(ResolveError::NotFound))?,
             };
 
             if index >= arr.len() {
-                return Err(PatchError::TODO);
+                return Err(PatchError::index_out_of_bounds(&path, index, arr.len()));
             }
             arr.remove(index);
         }
-        _ => {
-            return Err(PatchError::TODO);
+        val => {
+            return Err(PatchError::not_a_container(&parent, &value_type_desc(val)));
         }
     }
     Ok(())
@@ -103,7 +105,11 @@ mod tests {
     fn remove_non_existing_field_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(Err(PatchError::TODO) = remove(&mut doc, "/c".try_into().unwrap()));
+        let_assert!(
+            Err(PatchError::TargetNotFound { path }) = remove(&mut doc, "/c".try_into().unwrap())
+        );
+
+        check!(path == "/c".try_into().unwrap());
 
         check!(doc == json!({"a": 1, "b": 2}));
     }
@@ -112,7 +118,13 @@ mod tests {
     fn remove_field_from_non_object_should_fail() {
         let mut doc = json!({"a": [1, 2, 3]});
 
-        let_assert!(Err(PatchError::TODO) = remove(&mut doc, "/a/b".try_into().unwrap()));
+        let_assert!(
+            Err(PatchError::InvalidArrayIndexToken { path, token }) =
+                remove(&mut doc, "/a/b".try_into().unwrap())
+        );
+
+        check!(path == "/a/b".try_into().unwrap());
+        check!(token == "b");
 
         check!(doc == json!({"a": [1, 2, 3]}));
     }
@@ -175,7 +187,11 @@ mod tests {
     fn remove_from_empty_document_should_fail() {
         let mut doc = json!({});
 
-        let_assert!(Err(PatchError::TODO) = remove(&mut doc, "/a".try_into().unwrap()));
+        let_assert!(
+            Err(PatchError::TargetNotFound { path }) = remove(&mut doc, "/a".try_into().unwrap())
+        );
+
+        check!(path == "/a".try_into().unwrap());
 
         check!(doc == json!({}));
     }
@@ -193,7 +209,14 @@ mod tests {
     fn remove_from_array_out_of_bounds_should_fail() {
         let mut doc = json!([1, 2, 3]);
 
-        let_assert!(Err(PatchError::TODO) = remove(&mut doc, "/3".try_into().unwrap()));
+        let_assert!(
+            Err(PatchError::ArrayIndexOutOfBounds { path, index, len }) =
+                remove(&mut doc, "/3".try_into().unwrap())
+        );
+
+        check!(path == "/3".try_into().unwrap());
+        check!(index == 3);
+        check!(len == 3);
 
         check!(doc == json!([1, 2, 3]));
     }
@@ -202,7 +225,13 @@ mod tests {
     fn remove_from_non_array_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(Err(PatchError::TODO) = remove(&mut doc, "/a/0".try_into().unwrap()));
+        let_assert!(
+            Err(PatchError::NotAContainer { parent, actual }) =
+                remove(&mut doc, "/a/0".try_into().unwrap())
+        );
+
+        check!(parent == "/a".try_into().unwrap());
+        check!(actual == "number(1)");
 
         check!(doc == json!({"a": 1, "b": 2}));
     }

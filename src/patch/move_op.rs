@@ -203,12 +203,16 @@ mod tests {
         let mut doc = json!({"a": {"b": 2}, "c": 3});
 
         let_assert!(
-            Err(PatchError::TODO) = move_op(
+            Err(PatchError::NotAContainer { parent, actual }) = move_op(
                 &mut doc,
                 "/c".try_into().unwrap(),
                 "/a/b/d".try_into().unwrap()
             )
         );
+
+        check!(parent == "/a/b".try_into().unwrap());
+        check!(actual == "number(2)".to_string());
+
         check!(doc == json!({"a": {"b": 2}, "c": 3}));
     }
 
@@ -366,12 +370,15 @@ mod tests {
         });
 
         let_assert!(
-            Err(PatchError::TODO) = move_op(
+            Err(PatchError::MissingFinalToken { path }) = move_op(
                 &mut doc,
                 "/items/[id=item1]".try_into().unwrap(),
                 "/items/[id=item2]".try_into().unwrap()
             )
         );
+
+        check!(path == "/items/[id=item2]".try_into().unwrap());
+
         check!(
             doc == json!({
                 "items": [

@@ -1,6 +1,10 @@
 use serde_json::Value;
 
-use crate::{patch::error::PatchError, path::Spath, resolve::resolve_mut};
+use crate::{
+    patch::error::PatchError,
+    path::Spath,
+    resolve::{resolve_mut, value_type_desc},
+};
 
 /// The "add" operation performs one of the following functions,
 /// depending upon what the target location references:
@@ -64,10 +68,10 @@ pub fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError>
         return Ok(());
     }
 
-    let parent = path.parent().ok_or(PatchError::TODO)?;
+    let parent = path.parent().ok_or(PatchError::missing_parent(&path))?;
 
     let target = resolve_mut(doc, &parent)?;
-    let field = path.field().ok_or(PatchError::TODO)?;
+    let field = path.field().ok_or(PatchError::missing_final_token(&path))?;
 
     match target {
         Value::Object(obj) => {
@@ -77,18 +81,22 @@ pub fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError>
             if field == "-" {
                 arr.push(value);
             } else {
-                let index: usize = field.parse().map_err(|_e| PatchError::TODO)?;
+                let index: usize = field
+                    .parse()
+                    .map_err(|_e| PatchError::invalid_array_index_token(&path, &field))?;
 
                 // Spec defines that index must not be greater than the number of elements
                 if index > arr.len() {
-                    return Err(PatchError::TODO);
+                    return Err(PatchError::index_out_of_bounds(&path, index, arr.len()));
                 }
                 // serde implements insert with shifting elements to the right
                 // which is the desired behavior according to the spec
                 arr.insert(index, value);
             }
         }
-        _ => return Err(PatchError::TODO),
+        val => {
+            return Err(PatchError::not_a_container(&parent, &value_type_desc(val)));
+        }
     }
 
     Ok(())
@@ -205,7 +213,11 @@ mod tests {
 
         let result = add(&mut doc, "/a/5".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::TODO) = result);
+        let_assert!(Err(PatchError::ArrayIndexOutOfBounds { path, index, len }) = result);
+
+        check!(path == "/a/5".try_into().unwrap());
+        check!(index == 5);
+        check!(len == 3);
     }
 
     // -----------------------------
@@ -242,7 +254,10 @@ mod tests {
         // parent "/a" exists but is not object/array
         let result = add(&mut doc, "/a/b".try_into().unwrap(), json!(123));
 
-        let_assert!(Err(PatchError::TODO) = result);
+        let_assert!(Err(PatchError::NotAContainer { parent, actual }) = result);
+
+        check!(parent == "/a".try_into().unwrap());
+        check!(actual == "number(1)");
     }
 
     #[test]
@@ -265,7 +280,10 @@ mod tests {
             json!(123),
         );
 
-        let_assert!(Err(PatchError::TODO) = result);
+        let_assert!(Err(PatchError::NotAContainer { parent, actual }) = result);
+
+        check!(parent == "/[id=foo]/value".try_into().unwrap());
+        check!(actual == "number(1)");
     }
 
     // -----------------------------
@@ -341,7 +359,10 @@ mod tests {
 
         let result = add(&mut doc, "/a/-1".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::TODO) = result);
+        let_assert!(Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
+
+        check!(path == "/a/-1".try_into().unwrap());
+        check!(token == "-1");
     }
 
     #[test]
@@ -350,7 +371,10 @@ mod tests {
 
         let result = add(&mut doc, "/a/notanumber".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::TODO) = result);
+        let_assert!(Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
+
+        check!(path == "/a/notanumber".try_into().unwrap());
+        check!(token == "notanumber");
     }
 
     #[test]
@@ -359,7 +383,10 @@ mod tests {
 
         let result = add(&mut doc, "/a/1.0".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::TODO) = result);
+        let_assert!(Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
+
+        check!(path == "/a/1.0".try_into().unwrap());
+        check!(token == "1.0");
     }
 
     #[test]
@@ -389,7 +416,10 @@ mod tests {
         // parent "/a/0" exists but is scalar
         let result = add(&mut doc, "/a/0/b".try_into().unwrap(), json!(2));
 
-        let_assert!(Err(PatchError::TODO) = result);
+        let_assert!(Err(PatchError::NotAContainer { parent, actual }) = result);
+
+        check!(parent == "/a/0".try_into().unwrap());
+        check!(actual == "number(1)");
     }
 
     // -----------------------------
@@ -473,7 +503,9 @@ mod tests {
 
         let result = add(&mut doc, "/items/[id=baz]".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::TODO) = result);
+        let_assert!(Err(PatchError::MissingFinalToken { path }) = result);
+
+        check!(path == "/items/[id=baz]".try_into().unwrap());
     }
 
     #[test]

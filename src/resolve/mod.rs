@@ -206,7 +206,7 @@ fn value_match_bool(value: &bool, filter_value: &str) -> bool {
     )
 }
 
-fn value_type_desc(val: &serde_json::Value) -> String {
+pub fn value_type_desc(val: &serde_json::Value) -> String {
     match val {
         serde_json::Value::Null => "null".to_string(),
         serde_json::Value::Bool(b) => format!("boolean({b})"),
