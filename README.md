@@ -49,6 +49,9 @@ down to ordinary RFC 6902 patches.
 
 ## Usage
 
+> [!NOTE]
+> TODO: Add usage instructions and examples
+
 ## Why This Exists
 
 JSON Patch is a solid standard, but **index‑based array addressing is brittle**:
