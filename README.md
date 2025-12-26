@@ -10,6 +10,9 @@ are inserted/removed. When a JSON Schema is available, this crate allows you to 
 array elements by semantic identity (e.g. a key field), and compiles those paths
 down to ordinary RFC 6902 patches.
 
+📣 **Design discussion & feedback wanted:**\
+[https://github.com/kamilczerw/spatch/discussions/1](https://github.com/kamilczerw/spatch/discussions/1)
+
 ## Key Ideas
 
 - **RFC 6902 remains the wire format** -
