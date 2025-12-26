@@ -4,8 +4,8 @@ default:
     @just --list
 
 # Run all tests using cargo nextest
-test:
-    cargo nextest run
+test test="":
+    cargo nextest run {{test}}
 
 # Run tests with cargo nextest and watch for changes
 test-watch test="":

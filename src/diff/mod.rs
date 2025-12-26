@@ -1,4 +1,5 @@
 mod engine;
+mod error;
 mod patch_operations;
 #[cfg(test)]
 pub mod test_util;
@@ -8,7 +9,7 @@ use std::ops::{Add, Deref};
 pub use patch_operations::PatchOp;
 use serde::Serialize;
 
-use crate::path::Spath;
+use crate::{diff::error::DiffErrorSummary, path::Spath};
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Patch(Vec<PatchOp>);
@@ -49,6 +50,13 @@ pub fn diff(
     left: &serde_json::Value,
     right: &serde_json::Value,
     schema: Option<&serde_json::Value>,
-) -> Patch {
-    engine::diff_recursive(left, right, schema, &Spath::default(), &Patch::default())
+) -> Result<Patch, DiffErrorSummary> {
+    let (patch, error_summary) =
+        engine::diff_recursive(left, right, schema, &Spath::default(), &Patch::default());
+
+    if error_summary.is_empty() {
+        Ok(patch)
+    } else {
+        Err(error_summary)
+    }
 }

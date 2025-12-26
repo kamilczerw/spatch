@@ -11,7 +11,7 @@ pub fn handle_diff_command(args: DiffArgs) -> Result<(), Box<dyn std::error::Err
         None
     };
 
-    let result = diff(&file1, &file2, schema);
+    let result = diff(&file1, &file2, schema)?;
 
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
