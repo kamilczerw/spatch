@@ -141,7 +141,7 @@ Will produce a JSON Patch with semantic array paths:
 ]
 ```
 
-> [!IMPORTANT] > **Index key**
+> [!IMPORTANT]
 >
 > To let spatch know which property to use as identity key for array elements, you
 > **MUST** provide a JSON Schema that defines the array with `indexKey: "{identity-property-name}"`.
