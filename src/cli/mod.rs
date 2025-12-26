@@ -1,5 +1,5 @@
 pub mod diff;
-pub mod read;
+pub mod query;
 
 use std::path::PathBuf;
 
@@ -15,13 +15,14 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Resolve a path within a JSON structure
-    Read(ReadArgs),
+    Query(QueryArgs),
 
+    /// Diff two JSON files and output the differences
     Diff(DiffArgs),
 }
 
 #[derive(Debug, Args)]
-pub struct ReadArgs {
+pub struct QueryArgs {
     /// Path expression to resolve within the JSON structure
     /// The path format is similar to JSONPath, e.g., /store/book[category=fiction]/title
     /// It supports field access and filtering based on key-value pairs.

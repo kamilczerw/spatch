@@ -1,6 +1,6 @@
 use spatch::diff::diff;
 
-use crate::cli::{DiffArgs, read::load_json_file};
+use crate::cli::{DiffArgs, query::load_json_file};
 
 pub fn handle_diff_command(args: DiffArgs) -> Result<(), Box<dyn std::error::Error>> {
     let file1 = load_json_file(&args.file1)?;

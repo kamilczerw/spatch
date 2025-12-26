@@ -2,9 +2,9 @@ use std::{error::Error, io::Read};
 
 use spatch::resolve::SerdeValueExt;
 
-use crate::cli::ReadArgs;
+use crate::cli::QueryArgs;
 
-pub fn handle_read_command(args: ReadArgs) -> Result<(), Box<dyn Error>> {
+pub fn handle_query_command(args: QueryArgs) -> Result<(), Box<dyn Error>> {
     let json = if let Some(file_path) = args.file {
         load_json_file(&file_path)?
     } else {

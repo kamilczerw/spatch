@@ -49,8 +49,103 @@ down to ordinary RFC 6902 patches.
 
 ## Usage
 
-> [!NOTE]
-> TODO: Add usage instructions and examples
+There are 2 ways to use this crate - as cli or as a library.
+
+### CLI
+
+#### Query
+
+The query language is a standard JSON Pointer with added support for resolving array
+elements by their identity properties. For example, given the following JSON:
+
+```json
+{
+  "list": [
+    { "id": "item-1", "name": "Item 1", "value": 10 },
+    { "id": "item-2", "name": "Item 2", "value": 20 }
+  ]
+}
+```
+
+You can query by json pointer:
+
+```bash
+cat examples/simple.json | spatch query '/list/0'
+```
+
+Or by semantic path:
+
+```bash
+cat examples/simple.json | spatch query '/list/[id=item-1]'
+```
+
+The 2 above commands will output the same result:
+
+```json
+{ "id": "item-1", "name": "Item 1", "value": 10 }
+```
+
+You can also read the leaf value directly:
+
+```bash
+cat examples/simple.json | spatch query '/list/[id=item-1]/value'
+```
+
+#### Diff
+
+The `diff` command generates a JSON Patch between 2 JSON documents.
+It operates in 2 modes - pure RFC 6902 mode (index-based array addressing),
+or schema-aware mode (semantic array addressing).
+
+By default, `spatch diff` operates in pure RFC 6902 mode:
+
+```bash
+spatch diff examples/simple.json examples/simple-new.json
+```
+
+Will output a standard JSON Patch with index-based array paths.
+
+```json
+[
+  {
+    "op": "replace",
+    "path": "/list/1",
+    "value": {
+      "id": "item-2",
+      "name": "Item Two",
+      "value": 200
+    }
+  }
+]
+```
+
+To use the schema-aware mode, provide a JSON Schema with identity definitions
+
+```bash
+spatch diff --schema examples/simple.schema.json examples/simple.json examples/simple-new.json
+```
+
+Will produce a JSON Patch with semantic array paths:
+
+```json
+[
+  {
+    "op": "replace",
+    "path": "/list/[id=item-2]",
+    "value": {
+      "id": "item-2",
+      "name": "Item Two",
+      "value": 200
+    }
+  }
+]
+```
+
+> [!IMPORTANT] > **Index key**
+>
+> To let spatch know which property to use as identity key for array elements, you
+> **MUST** provide a JSON Schema that defines the array with `indexKey: "{identity-property-name}"`.
+> Otherwise, spatch will fall back to index-based addressing.
 
 ## Why This Exists
 
