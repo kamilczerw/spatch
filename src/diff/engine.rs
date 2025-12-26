@@ -73,7 +73,22 @@ fn diff_object(
         }
     }
 
-    inner_patch + Patch::new(removals)
+    let replace_patch = {
+        let patch_op =
+            super::PatchOp::replace(path_pointer.clone(), Value::Object(right_map.clone()));
+        Patch::new(vec![patch_op])
+    };
+
+    let computed_patch = inner_patch + Patch::new(removals);
+
+    let inner_patch_size_bytes = serde_json::to_vec(&computed_patch).unwrap().len();
+    let replace_patch_size_bytes = serde_json::to_vec(&replace_patch).unwrap().len();
+
+    if replace_patch_size_bytes < inner_patch_size_bytes {
+        replace_patch
+    } else {
+        computed_patch
+    }
 }
 
 fn diff_array(
@@ -172,13 +187,76 @@ fn diff_array_indexed(
 ) -> Patch {
     let len_left = left_array.len();
     let len_right = right_array.len();
+
+    let item_schema = schema.and_then(|s| s.get("items"));
+
+    // --------
+    // Fast paths (deterministic, human-friendly)
+    // --------
+
+    // 1) Pure truncate from the end: right is a prefix of left
+    // left:  [a,b,c]
+    // right: [a,b]
+    if len_right <= len_left && left_array[..len_right] == *right_array {
+        // remove from the end, descending indexes
+        let mut patch = Patch::default();
+        for i in (len_right..len_left).rev() {
+            let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
+            patch = patch + Patch::new_with_op(super::PatchOp::remove(child_path));
+        }
+        return patch;
+    }
+
+    // 2) Pure remove-from-front: right is a suffix of left
+    // left:  [a,b,c]
+    // right: [b,c]
+    if len_right <= len_left && left_array[len_left - len_right..] == *right_array {
+        // remove index 0 repeatedly
+        let mut patch = Patch::default();
+        for _ in 0..(len_left - len_right) {
+            let child_path = path_pointer.push(crate::path::Segment::Field("0".to_owned()));
+            patch = patch + Patch::new_with_op(super::PatchOp::remove(child_path));
+        }
+        return patch;
+    }
+
+    // 3) Pure append: left is a prefix of right
+    // left:  [a,b]
+    // right: [a,b,c]
+    if len_left <= len_right && right_array[..len_left] == *left_array {
+        let mut patch = Patch::default();
+        for el in &right_array[len_left..] {
+            let child_path = path_pointer.push(crate::path::Segment::Field("-".to_owned()));
+            patch = patch + Patch::new_with_op(super::PatchOp::add(child_path, el.clone()));
+        }
+        return patch;
+    }
+
+    // 4) Pure add-to-front: left is a suffix of right
+    // left:  [b,c]
+    // right: [a,b,c]
+    //
+    // JSON Patch has no "insert at front" primitive; it’s still `add /arr/0`.
+    if len_left <= len_right && right_array[len_right - len_left..] == *left_array {
+        let mut patch = Patch::default();
+        // add to front in increasing order so final order matches `right`
+        for el in right_array[..(len_right - len_left)].iter().rev() {
+            // inserting multiple at index 0: do it in reverse so final order is correct
+            let child_path = path_pointer.push(crate::path::Segment::Field("0".to_owned()));
+            patch = patch + Patch::new_with_op(super::PatchOp::add(child_path, el.clone()));
+        }
+        return patch;
+    }
+
+    // --------
+    // Fallback:
+    // --------
+
     let min_len = len_left.min(len_right);
 
     let recursed = (0..min_len)
         .map(|i| {
             let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
-            let item_schema = schema.and_then(|s| s.get("items"));
-
             diff_recursive(
                 &left_array[i],
                 &right_array[i],
@@ -190,10 +268,12 @@ fn diff_array_indexed(
         .fold(Patch::default(), |acc, p| acc + p);
 
     // Extra elements in left_array (removals)
+    // IMPORTANT: remove from end to avoid index shifting
     let removals = (min_len..len_left)
+        .rev()
         .map(|i| {
             let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
-            Patch::new_with_op(super::PatchOp::remove(child_path.clone()))
+            Patch::new_with_op(super::PatchOp::remove(child_path))
         })
         .fold(Patch::default(), |acc, p| acc + p);
 
@@ -202,7 +282,7 @@ fn diff_array_indexed(
         .iter()
         .map(|element| {
             let child_path = path_pointer.push(crate::path::Segment::Field("-".to_owned()));
-            Patch::new_with_op(super::PatchOp::add(child_path.clone(), element.clone()))
+            Patch::new_with_op(super::PatchOp::add(child_path, element.clone()))
         })
         .fold(Patch::default(), |acc, p| acc + p);
 
@@ -427,18 +507,12 @@ mod tests {
 
         let patch_ops = diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
 
-        // TODO: I think the result should be a just removal of the object at index 0
-        // Currently the emitted patch is not minimal, but valid
+        // TODO: The result should be a just removal of the object at index 0
+        // Currently the emitted patch is not optimal, but valid
         // We might want to optimize this in the future
-        let expected_patch = Patch::new(vec![
-            PatchOp::replace(path("/foo/0/count"), Value::Number(3.into())),
-            PatchOp::replace(path("/foo/0/id"), Value::String("bla".to_owned())),
-            PatchOp::remove(path("/foo/1")),
-        ]);
-        check!(patch_ops.len() == 3);
+        let expected_patch = Patch::new(vec![PatchOp::remove(path("/foo/0"))]);
+        check!(patch_ops.len() == 1);
         check!(patch_ops[0] == expected_patch[0]);
-        check!(patch_ops[1] == expected_patch[1]);
-        check!(patch_ops[2] == expected_patch[2]);
     }
 
     #[test]
@@ -454,16 +528,12 @@ mod tests {
 
         let patch_ops = diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
 
-        // TODO: The result should be a replace of the whole object at index 1
-        // Currently the emitted patch is not minimal, but valid
-        // We might want to optimize this in the future
-        let expected_patch = Patch::new(vec![
-            PatchOp::replace(path("/foo/1/count"), Value::Number(10.into())),
-            PatchOp::replace(path("/foo/1/id"), Value::String("lol".to_owned())),
-        ]);
-        check!(patch_ops.len() == 2);
+        let expected_patch = Patch::new(vec![PatchOp::replace(
+            path("/foo/1"),
+            serde_json::json!({"id": "lol", "count": 10}),
+        )]);
+        check!(patch_ops.len() == 1);
         check!(patch_ops[0] == expected_patch[0]);
-        check!(patch_ops[1] == expected_patch[1]);
     }
 
     #[test]
@@ -538,5 +608,108 @@ mod tests {
                 failures.len(),
             );
         }
+    }
+
+    #[test]
+    fn diff_object_should_replace_the_entire_value_when_majority_of_fields_changed() {
+        let left = serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4,
+        });
+        let right = serde_json::json!({
+            "a": 10,
+            "b": 20,
+            "c": 30,
+            "d": 4,
+        });
+
+        let patch_ops = diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+
+        let expected_patch = Patch::new(vec![PatchOp::replace(Spath::default(), right.clone())]);
+
+        check!(patch_ops.len() == 1);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn diff_array_indexed_should_handle_pure_truncate() {
+        let left = serde_json::json!(["a", "b", "c", "d"]);
+        let right = serde_json::json!(["a", "b"]);
+
+        let patch_ops = diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+
+        let expected_patch = Patch::new(vec![
+            PatchOp::remove(path("/3")),
+            PatchOp::remove(path("/2")),
+        ]);
+
+        check!(patch_ops.len() == 2);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn diff_array_indexed_should_handle_pure_append() {
+        let left = serde_json::json!(["a", "b"]);
+        let right = serde_json::json!(["a", "b", "c", "d"]);
+
+        let patch_ops = diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+
+        let expected_patch = Patch::new(vec![
+            PatchOp::add(path("/-"), serde_json::json!("c")),
+            PatchOp::add(path("/-"), serde_json::json!("d")),
+        ]);
+
+        check!(patch_ops.len() == 2);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn diff_array_indexed_should_handle_pure_remove_from_front() {
+        let left = serde_json::json!(["a", "b", "c", "d"]);
+        let right = serde_json::json!(["c", "d"]);
+
+        let patch_ops = diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+
+        let expected_patch = Patch::new(vec![
+            PatchOp::remove(path("/0")),
+            PatchOp::remove(path("/0")),
+        ]);
+
+        check!(patch_ops.len() == 2);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn diff_array_indexed_should_handle_pure_add_to_front() {
+        let left = serde_json::json!(["c", "d"]);
+        let right = serde_json::json!(["a", "b", "c", "d"]);
+
+        let patch_ops = diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+
+        let expected_patch = Patch::new(vec![
+            PatchOp::add(path("/0"), serde_json::json!("b")),
+            PatchOp::add(path("/0"), serde_json::json!("a")),
+        ]);
+
+        check!(patch_ops.len() == 2);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn diff_array_indexed_should_handle_mixed_changes() {
+        let left = serde_json::json!(["a", "b", "c"]);
+        let right = serde_json::json!(["a", "x", "c", "d"]);
+
+        let patch_ops = diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+
+        let expected_patch = Patch::new(vec![
+            PatchOp::replace(path("/1"), serde_json::json!("x")),
+            PatchOp::add(path("/-"), serde_json::json!("d")),
+        ]);
+
+        check!(patch_ops.len() == 2);
+        check!(patch_ops == expected_patch);
     }
 }
