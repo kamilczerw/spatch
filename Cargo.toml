@@ -1,6 +1,6 @@
 [package]
 name = "spatch"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 description = "JSON Patch (RFC 6902) library and CLI with optional schema-aware paths for stable array element addressing"
 license-file = "LICENSE"
