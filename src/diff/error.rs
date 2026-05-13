@@ -3,6 +3,7 @@ use std::ops::Add;
 use crate::path::Spath;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum DiffError {
     #[error("Item {path} is missing index key '{index_key}'")]
     MissingIndexKey { path: Spath, index_key: String },

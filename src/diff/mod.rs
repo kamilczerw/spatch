@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use crate::{diff::error::DiffErrorSummary, path::Spath};
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Clone)]
 pub struct Patch(Vec<PatchOp>);
 
 impl Patch {
@@ -46,6 +46,18 @@ impl Add for Patch {
     }
 }
 
+impl Iterator for Patch {
+    type Item = PatchOp;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.0.is_empty() {
+            None
+        } else {
+            Some(self.0.remove(0))
+        }
+    }
+}
+
 pub fn diff(
     left: &serde_json::Value,
     right: &serde_json::Value,
@@ -58,5 +70,69 @@ pub fn diff(
         Ok(patch)
     } else {
         Err(error_summary)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assert2::{check, let_assert};
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn test_diff_simple() {
+        let left = json!({
+            "name": "Alice",
+            "age": 30,
+        });
+
+        let right = json!({
+            "name": "Alice",
+            "age": 31,
+        });
+
+        let patch = diff(&left, &right, None).unwrap();
+        check!(patch.len() == 1);
+        let_assert!(PatchOp::Replace { path, value } = &patch[0]);
+        check!(path.to_string() == "/age");
+        check!(value == &json!(31));
+    }
+
+    #[test]
+    fn test_iterator() {
+        let patch = Patch::new(vec![
+            PatchOp::replace("/a".try_into().unwrap(), json!(1)),
+            PatchOp::remove("/b".try_into().unwrap()),
+        ]);
+
+        for op in patch {
+            match op {
+                PatchOp::Replace { path, value } => {
+                    check!(path.to_string() == "/a");
+                    check!(value == json!(1));
+                }
+                PatchOp::Remove { path } => {
+                    check!(path.to_string() == "/b");
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn test_addition() {
+        let patch1 = Patch::new(vec![PatchOp::replace("/a".try_into().unwrap(), json!(1))]);
+        let patch2 = Patch::new(vec![PatchOp::remove("/b".try_into().unwrap())]);
+
+        let combined_patch = patch1 + patch2;
+
+        check!(combined_patch.len() == 2);
+        let_assert!(PatchOp::Replace { path, value } = &combined_patch[0]);
+        check!(path.to_string() == "/a");
+        check!(value == &json!(1));
+
+        let_assert!(PatchOp::Remove { path } = &combined_patch[1]);
+        check!(path.to_string() == "/b");
     }
 }
