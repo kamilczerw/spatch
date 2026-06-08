@@ -208,23 +208,38 @@ fn build_key_map(
         let current_path = path_pointer.push(crate::path::Segment::Field(format!("{}", i)));
         if let Value::Object(obj) = item {
             match obj.get(index_key) {
-                Some(Value::String(k)) => {
-                    if map.contains_key(k) {
-                        errors.push(DiffError::duplicate_index_key(&current_path, index_key, k));
-                    } else {
-                        map.insert(k.clone(), item.clone());
+                Some(value) => match index_key_value_to_filter(value) {
+                    Some(key) => {
+                        if map.contains_key(&key) {
+                            errors.push(DiffError::duplicate_index_key(
+                                &current_path,
+                                index_key,
+                                &key,
+                            ));
+                        } else {
+                            map.insert(key, item.clone());
+                        }
                     }
-                }
+                    None => {
+                        errors.push(DiffError::non_string_index_key(&current_path, value));
+                    }
+                },
                 None => {
                     errors.push(DiffError::missing_index_key(&current_path, index_key));
-                }
-                Some(key) => {
-                    errors.push(DiffError::non_string_index_key(&current_path, key));
                 }
             }
         }
     }
     (map, errors)
+}
+
+fn index_key_value_to_filter(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
 }
 
 fn diff_array_indexed(
