@@ -102,7 +102,9 @@ fn diff_object(
 
     match options.granularity {
         DiffGranularity::Compact => {
-            if replace_patch_size_bytes < inner_patch_size_bytes {
+            if !patch_contains_semantic_path(&computed_patch.0)
+                && replace_patch_size_bytes < inner_patch_size_bytes
+            {
                 (replace_patch, inner_patch.1)
             } else {
                 computed_patch
@@ -110,6 +112,26 @@ fn diff_object(
         }
         DiffGranularity::Granular => computed_patch,
     }
+}
+
+fn patch_contains_semantic_path(patch: &Patch) -> bool {
+    patch.iter().any(patch_op_contains_semantic_path)
+}
+
+fn patch_op_contains_semantic_path(op: &super::PatchOp) -> bool {
+    match op {
+        super::PatchOp::Add { path, .. }
+        | super::PatchOp::Remove { path }
+        | super::PatchOp::Replace { path, .. }
+        | super::PatchOp::Move { path, .. }
+        | super::PatchOp::Copy { path, .. }
+        | super::PatchOp::Test { path, .. } => path_contains_semantic_segment(path),
+    }
+}
+
+fn path_contains_semantic_segment(path: &Spath) -> bool {
+    path.into_iter()
+        .any(|segment| matches!(segment, crate::path::Segment::Filter(_)))
 }
 
 fn diff_array(
@@ -147,9 +169,18 @@ fn diff_array_keyed(
     let keys_a: HashSet<_> = map_left.keys().cloned().collect();
     let keys_b: HashSet<_> = map_right.keys().cloned().collect();
 
+    let mut removed_keys: Vec<_> = keys_a.difference(&keys_b).collect();
+    removed_keys.sort_unstable();
+
+    let mut added_keys: Vec<_> = keys_b.difference(&keys_a).collect();
+    added_keys.sort_unstable();
+
+    let mut modified_keys: Vec<_> = keys_a.intersection(&keys_b).collect();
+    modified_keys.sort_unstable();
+
     // Removed elements
-    let removed = keys_a
-        .difference(&keys_b)
+    let removed = removed_keys
+        .into_iter()
         .map(|key| {
             let child_path = path_pointer.push_filter(index_key, key);
             Patch::new_with_op(super::PatchOp::remove(child_path.clone()))
@@ -157,8 +188,8 @@ fn diff_array_keyed(
         .fold(Patch::default(), |acc, p| acc + p);
 
     // Added elements
-    let added = keys_b
-        .difference(&keys_a)
+    let added = added_keys
+        .into_iter()
         .map(|key| {
             let child_path = path_pointer.push_filter(index_key, key);
             let val = &map_right[key];
@@ -171,8 +202,8 @@ fn diff_array_keyed(
     let child_options = options.with_optional_schema(sub_schema);
 
     // Modified elements (same key in both)
-    let modified = keys_a
-        .intersection(&keys_b)
+    let modified = modified_keys
+        .into_iter()
         .map(|key| {
             let child_path = path_pointer.push_filter(index_key, key);
             let value_left = &map_left[key];
@@ -544,6 +575,81 @@ mod tests {
             PatchOp::replace(path("/long_field_name_a"), Value::Number(10.into())),
             PatchOp::replace(path("/long_field_name_b"), Value::Number(20.into())),
             PatchOp::replace(path("/long_field_name_c"), Value::Number(30.into())),
+        ]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn compact_granularity_should_preserve_schema_aware_semantic_paths() {
+        let schema = serde_json::json!({
+            "properties": {
+                "tracks": {
+                    "type": "array",
+                    "indexKey": "id",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" },
+                            "levels": {
+                                "type": "array",
+                                "indexKey": "id",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": { "type": "integer" },
+                                        "xp": { "type": "integer" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        let left = serde_json::json!({
+            "tracks": [{
+                "id": "free",
+                "levels": [
+                    { "id": 1, "xp": 100 },
+                    { "id": 2, "xp": 200 },
+                    { "id": 3, "xp": 300 }
+                ]
+            }]
+        });
+        let right = serde_json::json!({
+            "tracks": [{
+                "id": "free",
+                "levels": [
+                    { "id": 1, "xp": 1000 },
+                    { "id": 2, "xp": 2000 },
+                    { "id": 3, "xp": 3000 }
+                ]
+            }]
+        });
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().with_schema(&schema).compact(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![
+            PatchOp::replace(
+                path("/tracks/[id=free]/levels/[id=1]/xp"),
+                serde_json::json!(1000),
+            ),
+            PatchOp::replace(
+                path("/tracks/[id=free]/levels/[id=2]/xp"),
+                serde_json::json!(2000),
+            ),
+            PatchOp::replace(
+                path("/tracks/[id=free]/levels/[id=3]/xp"),
+                serde_json::json!(3000),
+            ),
         ]);
 
         check!(diff_errors.is_empty() == true);

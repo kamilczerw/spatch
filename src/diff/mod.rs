@@ -125,7 +125,9 @@ impl Iterator for Patch {
 /// By default, spatch emits ordinary RFC 6902-style, index-based paths. Provide
 /// a schema through [`DiffOptions::with_schema`] to generate semantic array
 /// paths based on `indexKey`, and use [`DiffOptions::granular`] when you prefer
-/// nested, review-friendly object changes over compact parent replacements.
+/// nested, review-friendly object changes. Compact mode may collapse plain
+/// object changes to parent replacements, but it preserves schema-aware semantic
+/// paths so identity filters like `[id=item-42]` are not lost.
 ///
 /// Schema-aware diffing follows local JSON Schema `$ref`s in the provided schema
 /// document while traversing object properties and array items. Array item

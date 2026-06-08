@@ -282,6 +282,9 @@ impl<'a> DiffOptions<'a> {
     ///
     /// Compact mode is the default. When a parent object replacement serializes
     /// smaller than many child operations, spatch emits the parent `replace`.
+    /// Schema-aware diffs are the exception: if nested operations contain
+    /// semantic path filters like `[id=item-42]`, compact mode keeps those
+    /// operations so semantic identity is not lost.
     pub fn compact(mut self) -> Self {
         self.granularity = DiffGranularity::Compact;
         self

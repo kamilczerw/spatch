@@ -337,6 +337,9 @@ of being encoded into semantic path filters.
 
 `DiffOptions::new()` defaults to compact mode. Compact mode keeps patches small
 and may replace a parent object when that is shorter than many nested operations.
+When schema-aware diffing produces semantic paths, compact mode keeps those
+semantic operations instead of collapsing them away, so identity filters such as
+`[id=item-2]` or `[id=1]` remain visible in the patch.
 
 ```rust
 use serde_json::json;
