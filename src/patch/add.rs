@@ -104,7 +104,7 @@ pub fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError>
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, assert};
+    use assert2::{assert, check};
     use serde_json::{from_str, json};
 
     use crate::resolve::ResolveError;

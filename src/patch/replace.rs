@@ -28,7 +28,7 @@ pub fn replace(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchEr
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, assert};
+    use assert2::{assert, check};
     use serde_json::json;
 
     use crate::resolve::ResolveError;
@@ -63,7 +63,7 @@ mod tests {
     fn resolve_non_existing_field_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 replace(&mut doc, "/c".try_into().unwrap(), json!(42))
         );
@@ -74,7 +74,7 @@ mod tests {
     fn replace_field_in_non_object_should_fail() {
         let mut doc = json!({"a": [1, 2, 3]});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(_)) =
                 replace(&mut doc, "/a/b".try_into().unwrap(), json!(42))
         );
@@ -101,7 +101,7 @@ mod tests {
     fn replace_array_element_out_of_bounds_should_fail() {
         let mut doc = json!({"a": [1, 2, 3]});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 replace(&mut doc, "/a/5".try_into().unwrap(), json!(42))
         );
@@ -112,7 +112,7 @@ mod tests {
     fn replace_array_element_out_of_bounds_at_len_should_fail() {
         let mut doc = json!({"a": [1, 2, 3]});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 replace(&mut doc, "/a/3".try_into().unwrap(), json!(42))
         );
@@ -129,7 +129,7 @@ mod tests {
             ]
         });
 
-        assert!(let 
+        assert!(let
             Ok(()) = replace(
                 &mut doc,
                 "/items/[id=2]/value".try_into().unwrap(),
@@ -157,7 +157,7 @@ mod tests {
             ]
         });
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(ResolveError::NotFound)) = replace(
                 &mut doc,
                 "/items/[id=4]/value".try_into().unwrap(),
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn replace_array_dash_should_fail() {
         let mut doc = json!({"a":[1,2,3]});
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(_)) =
                 replace(&mut doc, "/a/-".try_into().unwrap(), json!(42))
         );
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn replace_array_non_numeric_index_should_fail() {
         let mut doc = json!({"a":[1,2,3]});
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(_)) =
                 replace(&mut doc, "/a/foo".try_into().unwrap(), json!(42))
         );
