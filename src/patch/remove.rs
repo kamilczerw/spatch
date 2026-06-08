@@ -69,7 +69,7 @@ fn find_array_index(arr: &[Value], filters: &[(String, String)]) -> Option<usize
 #[cfg(test)]
 mod tests {
 
-    use assert2::{check, let_assert};
+    use assert2::{check, assert};
     use serde_json::json;
 
     use crate::resolve::ResolveError;
@@ -80,14 +80,14 @@ mod tests {
     fn remove_empty_path_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(Err(PatchError::CannotRemoveRoot) = remove(&mut doc, "".try_into().unwrap()));
+        assert!(let Err(PatchError::CannotRemoveRoot) = remove(&mut doc, "".try_into().unwrap()));
     }
 
     #[test]
     fn remove_root_path_should_remove_a_document_at_empty_key() {
         let mut doc = json!({"a": 1, "b": 2, "": 3});
 
-        let_assert!(Ok(()) = remove(&mut doc, "/".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/".try_into().unwrap()));
 
         check!(doc == json!({"a": 1, "b": 2}));
     }
@@ -96,7 +96,7 @@ mod tests {
     fn remove_existing_field_should_succeed() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(Ok(()) = remove(&mut doc, "/a".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/a".try_into().unwrap()));
 
         check!(doc == json!({"b": 2}));
     }
@@ -105,7 +105,7 @@ mod tests {
     fn remove_non_existing_field_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::TargetNotFound { path }) = remove(&mut doc, "/c".try_into().unwrap())
         );
 
@@ -118,7 +118,7 @@ mod tests {
     fn remove_field_from_non_object_should_fail() {
         let mut doc = json!({"a": [1, 2, 3]});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::InvalidArrayIndexToken { path, token }) =
                 remove(&mut doc, "/a/b".try_into().unwrap())
         );
@@ -133,7 +133,7 @@ mod tests {
     fn remove_field_from_nested_object_should_succeed() {
         let mut doc = json!({"a": {"b": {"c": 3, "d": 4}}, "e": 5});
 
-        let_assert!(Ok(()) = remove(&mut doc, "/a/b/c".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/a/b/c".try_into().unwrap()));
 
         check!(doc == json!({"a": {"b": {"d": 4}}, "e": 5}));
     }
@@ -147,7 +147,7 @@ mod tests {
             ]
         });
 
-        let_assert!(Ok(()) = remove(&mut doc, "/items/[id=item1]/value".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/items/[id=item1]/value".try_into().unwrap()));
 
         check!(
             doc == json!({
@@ -168,7 +168,7 @@ mod tests {
             ]
         });
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 remove(&mut doc, "/items/[id=item3]/value".try_into().unwrap())
         );
@@ -187,7 +187,7 @@ mod tests {
     fn remove_from_empty_document_should_fail() {
         let mut doc = json!({});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::TargetNotFound { path }) = remove(&mut doc, "/a".try_into().unwrap())
         );
 
@@ -200,7 +200,7 @@ mod tests {
     fn remove_from_array_should_succeed() {
         let mut doc = json!([1, 2, 3]);
 
-        let_assert!(Ok(()) = remove(&mut doc, "/0".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/0".try_into().unwrap()));
 
         check!(doc == json!([2, 3]));
     }
@@ -209,7 +209,7 @@ mod tests {
     fn remove_from_array_out_of_bounds_should_fail() {
         let mut doc = json!([1, 2, 3]);
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ArrayIndexOutOfBounds { path, index, len }) =
                 remove(&mut doc, "/3".try_into().unwrap())
         );
@@ -225,7 +225,7 @@ mod tests {
     fn remove_from_non_array_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::NotAContainer { parent, actual }) =
                 remove(&mut doc, "/a/0".try_into().unwrap())
         );
@@ -240,7 +240,7 @@ mod tests {
     fn remove_with_empty_key_and_nested_path_should_succeed() {
         let mut doc = json!({"a": {"": {"b": 1}}, "b": 2});
 
-        let_assert!(Ok(()) = remove(&mut doc, "/a//b".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/a//b".try_into().unwrap()));
 
         check!(doc == json!({"a": {"": {}}, "b": 2}));
     }
@@ -249,7 +249,7 @@ mod tests {
     fn remove_with_special_characters_in_key_should_succeed() {
         let mut doc = json!({"a/b": {"c~d": 1}, "e": 2});
 
-        let_assert!(Ok(()) = remove(&mut doc, "/a~1b/c~0d".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/a~1b/c~0d".try_into().unwrap()));
 
         check!(doc == json!({"a/b": {}, "e": 2}));
     }
@@ -263,7 +263,7 @@ mod tests {
             ]
         });
 
-        let_assert!(Ok(()) = remove(&mut doc, "/items/[id=item2]".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/items/[id=item2]".try_into().unwrap()));
 
         check!(
             doc == json!({
@@ -283,7 +283,7 @@ mod tests {
             ]
         });
 
-        let_assert!(Ok(()) = remove(&mut doc, "/items/[id=item2]/value".try_into().unwrap()));
+        assert!(let Ok(()) = remove(&mut doc, "/items/[id=item2]/value".try_into().unwrap()));
         check!(
             doc == json!({
                 "items": [
@@ -303,7 +303,7 @@ mod tests {
             ]
         });
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 remove(&mut doc, "/items/[id=item3]".try_into().unwrap())
         );
@@ -328,7 +328,7 @@ mod tests {
             ]
         });
 
-        let_assert!(
+        assert!(let 
             Ok(()) = remove(
                 &mut doc,
                 "/items/[type=A, id=item3]/value".try_into().unwrap()

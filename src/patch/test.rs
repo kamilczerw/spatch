@@ -54,7 +54,7 @@ pub fn test(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, let_assert};
+    use assert2::{check, assert};
     use serde_json::json;
 
     use crate::resolve::ResolveError;
@@ -65,8 +65,8 @@ mod tests {
     fn test_should_succeed_for_equal_values() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(Ok(_) = test(&mut doc, "/a".try_into().unwrap(), json!(1)));
-        let_assert!(Ok(_) = test(&mut doc, "/b".try_into().unwrap(), json!(2)));
+        assert!(let Ok(_) = test(&mut doc, "/a".try_into().unwrap(), json!(1)));
+        assert!(let Ok(_) = test(&mut doc, "/b".try_into().unwrap(), json!(2)));
         check!(doc == json!({"a": 1, "b": 2}));
     }
 
@@ -74,10 +74,10 @@ mod tests {
     fn test_should_fail_for_unequal_values() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ValuesNotEqual) = test(&mut doc, "/a".try_into().unwrap(), json!(42))
         );
-        let_assert!(
+        assert!(let 
             Err(PatchError::ValuesNotEqual) = test(&mut doc, "/b".try_into().unwrap(), json!(3))
         );
         check!(doc == json!({"a": 1, "b": 2}));
@@ -87,7 +87,7 @@ mod tests {
     fn test_should_fail_for_nonexistent_path() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 test(&mut doc, "/c".try_into().unwrap(), json!(3))
         );
@@ -98,16 +98,16 @@ mod tests {
     fn test_should_succeed_for_complex_equal_values() {
         let mut doc = json!({"a": {"b": [1, 2, 3], "c": "hello"}, "d": true});
 
-        let_assert!(
+        assert!(let 
             Ok(_) = test(
                 &mut doc,
                 "/a".try_into().unwrap(),
                 json!({"b": [1, 2, 3], "c": "hello"})
             )
         );
-        let_assert!(Ok(_) = test(&mut doc, "/a/b".try_into().unwrap(), json!([1, 2, 3])));
-        let_assert!(Ok(_) = test(&mut doc, "/a/c".try_into().unwrap(), json!("hello")));
-        let_assert!(Ok(_) = test(&mut doc, "/d".try_into().unwrap(), json!(true)));
+        assert!(let Ok(_) = test(&mut doc, "/a/b".try_into().unwrap(), json!([1, 2, 3])));
+        assert!(let Ok(_) = test(&mut doc, "/a/c".try_into().unwrap(), json!("hello")));
+        assert!(let Ok(_) = test(&mut doc, "/d".try_into().unwrap(), json!(true)));
         check!(doc == json!({"a": {"b": [1, 2, 3], "c": "hello"}, "d": true}));
     }
 }

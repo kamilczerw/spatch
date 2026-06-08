@@ -48,7 +48,7 @@ pub fn move_op(doc: &mut Value, from: Spath, path: Spath) -> Result<(), PatchErr
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, let_assert};
+    use assert2::{check, assert};
     use serde_json::json;
 
     use crate::resolve::ResolveError;
@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn move_of_the_root_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
-        let_assert!(
+        assert!(let 
             Err(PatchError::CannotMoveIntoChild) =
                 move_op(&mut doc, "".try_into().unwrap(), "/a".try_into().unwrap())
         );
@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn move_into_child_should_fail() {
         let mut doc = json!({"a": {"b": 2}, "c": 3});
-        let_assert!(
+        assert!(let 
             Err(PatchError::CannotMoveIntoChild) = move_op(
                 &mut doc,
                 "/a".try_into().unwrap(),
@@ -84,7 +84,7 @@ mod tests {
     fn move_existing_field_should_succeed() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(Ok(()) = move_op(&mut doc, "/a".try_into().unwrap(), "/c".try_into().unwrap()));
+        assert!(let Ok(()) = move_op(&mut doc, "/a".try_into().unwrap(), "/c".try_into().unwrap()));
         check!(doc == json!({"b": 2, "c": 1}));
     }
 
@@ -92,7 +92,7 @@ mod tests {
     fn move_non_existing_field_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(_)) =
                 move_op(&mut doc, "/c".try_into().unwrap(), "/d".try_into().unwrap())
         );
@@ -104,7 +104,7 @@ mod tests {
     fn move_field_to_nested_object_should_succeed() {
         let mut doc = json!({"a": {"b": 2}, "c": 3});
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/c".try_into().unwrap(),
@@ -118,7 +118,7 @@ mod tests {
     fn move_array_element_should_succeed() {
         let mut doc = json!({"a": [1, 2, 3], "b": []});
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/a/1".try_into().unwrap(),
@@ -132,7 +132,7 @@ mod tests {
     fn move_array_element_to_object_field_should_succeed() {
         let mut doc = json!({"a": [1, 2, 3], "b": {}});
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/a/0".try_into().unwrap(),
@@ -146,7 +146,7 @@ mod tests {
     fn move_array_element_to_the_end_of_same_array_should_succeed() {
         let mut doc = json!({"a": [1, 2, 3, 4]});
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/a/1".try_into().unwrap(),
@@ -160,7 +160,7 @@ mod tests {
     fn move_array_element_inside_same_array_should_succeed() {
         let mut doc = json!({"a": [1, 2, 3, 4]});
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/a/1".try_into().unwrap(),
@@ -174,7 +174,7 @@ mod tests {
     fn move_array_element_out_of_bounds_should_fail() {
         let mut doc = json!({"a": [1, 2, 3]});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(_)) = move_op(
                 &mut doc,
                 "/a/5".try_into().unwrap(),
@@ -188,7 +188,7 @@ mod tests {
     fn move_from_non_array_should_fail() {
         let mut doc = json!({"a": {"b": 2}, "c": 3});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(_)) = move_op(
                 &mut doc,
                 "/a/b/0".try_into().unwrap(),
@@ -202,7 +202,7 @@ mod tests {
     fn move_to_non_object_should_fail() {
         let mut doc = json!({"a": {"b": 2}, "c": 3});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::NotAContainer { parent, actual }) = move_op(
                 &mut doc,
                 "/c".try_into().unwrap(),
@@ -220,7 +220,7 @@ mod tests {
     fn move_with_empty_key_should_succeed() {
         let mut doc = json!({"": {"a": 1}, "b": 2});
 
-        let_assert!(Ok(()) = move_op(&mut doc, "/".try_into().unwrap(), "/b".try_into().unwrap()));
+        assert!(let Ok(()) = move_op(&mut doc, "/".try_into().unwrap(), "/b".try_into().unwrap()));
         check!(doc == json!({"b": {"a": 1}}));
     }
 
@@ -228,7 +228,7 @@ mod tests {
     fn move_with_special_characters_in_key_should_succeed() {
         let mut doc = json!({"a/b": {"c~d": 1}, "e": 2});
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/a~1b/c~0d".try_into().unwrap(),
@@ -242,7 +242,7 @@ mod tests {
     fn move_nested_field_should_succeed() {
         let mut doc = json!({"a": {"b": {"c": 1}}, "d": 2});
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/a/b/c".try_into().unwrap(),
@@ -262,7 +262,7 @@ mod tests {
             "selected": null
         });
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/items/[id=item2]/value".try_into().unwrap(),
@@ -290,7 +290,7 @@ mod tests {
             "selected": null
         });
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(_)) = move_op(
                 &mut doc,
                 "/items/[id=item3]/value".try_into().unwrap(),
@@ -317,7 +317,7 @@ mod tests {
             ]
         });
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::CannotMoveIntoChild) = move_op(
                 &mut doc,
                 "/items/[id=item1]/value".try_into().unwrap(),
@@ -343,7 +343,7 @@ mod tests {
             ],
         });
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/items/[id=item2]".try_into().unwrap(),
@@ -369,7 +369,7 @@ mod tests {
             ],
         });
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::MissingFinalToken { path }) = move_op(
                 &mut doc,
                 "/items/[id=item1]".try_into().unwrap(),
@@ -399,7 +399,7 @@ mod tests {
             ],
         });
 
-        let_assert!(
+        assert!(let 
             Ok(()) = move_op(
                 &mut doc,
                 "/items/[id=item2]".try_into().unwrap(),
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn move_non_existing_to_child_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(ResolveError::NotFound)) = move_op(
                 &mut doc,
                 "/c".try_into().unwrap(),
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn move_to_the_same_location_should_succeed() {
         let mut doc = json!({"a": 1, "b": 2});
-        let_assert!(Ok(()) = move_op(&mut doc, "/a".try_into().unwrap(), "/a".try_into().unwrap()));
+        assert!(let Ok(()) = move_op(&mut doc, "/a".try_into().unwrap(), "/a".try_into().unwrap()));
 
         check!(doc == json!({"a": 1, "b": 2}));
     }

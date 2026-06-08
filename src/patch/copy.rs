@@ -29,7 +29,7 @@ pub fn copy(doc: &mut Value, from: Spath, path: Spath) -> Result<(), PatchError>
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, let_assert};
+    use assert2::{check, assert};
     use serde_json::json;
 
     use crate::resolve::ResolveError;
@@ -40,7 +40,7 @@ mod tests {
     fn copy_from_nonexistent_path_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(
+        assert!(let 
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 copy(&mut doc, "/c".try_into().unwrap(), "/d".try_into().unwrap())
         );
@@ -51,7 +51,7 @@ mod tests {
     fn copy_root_to_child_should_succeed() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(Ok(()) = copy(&mut doc, "".try_into().unwrap(), "/c".try_into().unwrap()));
+        assert!(let Ok(()) = copy(&mut doc, "".try_into().unwrap(), "/c".try_into().unwrap()));
         check!(doc == json!({"a": 1, "b": 2, "c": {"a": 1, "b": 2}}));
     }
 
@@ -59,7 +59,7 @@ mod tests {
     fn copy_child_to_root_should_succeed() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        let_assert!(Ok(()) = copy(&mut doc, "/a".try_into().unwrap(), "".try_into().unwrap()));
+        assert!(let Ok(()) = copy(&mut doc, "/a".try_into().unwrap(), "".try_into().unwrap()));
         check!(doc == json!(1));
     }
 }

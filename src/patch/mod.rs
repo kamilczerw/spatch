@@ -44,7 +44,7 @@ pub fn apply(doc: &Value, patch: &[PatchOp]) -> Result<Value, PatchError> {
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, let_assert};
+    use assert2::{check, assert};
     use serde_json::json;
 
     use super::*;
@@ -68,7 +68,7 @@ mod tests {
             PatchOp::test("/a".try_into().unwrap(), json!(2)), // This test will fail
         ];
 
-        let_assert!(Err(PatchError::MultipleErrors(errors)) = apply(&doc, &patches));
+        assert!(let Err(PatchError::MultipleErrors(errors)) = apply(&doc, &patches));
 
         check!(errors.len() == 1);
     }
@@ -85,7 +85,7 @@ mod tests {
             PatchOp::replace("/b".try_into().unwrap(), json!({"baz": [1, 2, 3]})),
         ];
 
-        let_assert!(Ok(resulting_doc) = apply(&doc, &patches));
+        assert!(let Ok(resulting_doc) = apply(&doc, &patches));
 
         check!(
             resulting_doc

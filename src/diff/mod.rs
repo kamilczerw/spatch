@@ -75,7 +75,7 @@ pub fn diff(
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, let_assert};
+    use assert2::{check, assert};
     use serde_json::json;
 
     use super::*;
@@ -94,7 +94,7 @@ mod tests {
 
         let patch = diff(&left, &right, None).unwrap();
         check!(patch.len() == 1);
-        let_assert!(PatchOp::Replace { path, value } = &patch[0]);
+        assert!(let PatchOp::Replace { path, value } = &patch[0]);
         check!(path.to_string() == "/age");
         check!(value == &json!(31));
     }
@@ -128,11 +128,11 @@ mod tests {
         let combined_patch = patch1 + patch2;
 
         check!(combined_patch.len() == 2);
-        let_assert!(PatchOp::Replace { path, value } = &combined_patch[0]);
+        assert!(let PatchOp::Replace { path, value } = &combined_patch[0]);
         check!(path.to_string() == "/a");
         check!(value == &json!(1));
 
-        let_assert!(PatchOp::Remove { path } = &combined_patch[1]);
+        assert!(let PatchOp::Remove { path } = &combined_patch[1]);
         check!(path.to_string() == "/b");
     }
 }

@@ -118,7 +118,7 @@ fn unescape_json_pointer(input: &str) -> IResult<&str, char, VerboseError<&str>>
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, let_assert};
+    use assert2::{check, assert};
 
     use super::*;
 
@@ -228,7 +228,7 @@ mod tests {
         let input = "";
         let result = parse_path(input);
 
-        let_assert!(Ok((rest, spath)) = result);
+        assert!(let Ok((rest, spath)) = result);
 
         check!(rest == "");
         check!(spath.segments.len() == 0);
@@ -239,7 +239,7 @@ mod tests {
         let input = "/";
         let result = parse_path(input);
 
-        let_assert!(Ok((rest, spath)) = result);
+        assert!(let Ok((rest, spath)) = result);
 
         check!(rest == "");
         check!(spath.segments.len() == 1);
@@ -303,7 +303,7 @@ mod tests {
     fn test_parse_path_with_escaped_slash() {
         let input = "/foo/a~1b/bar";
         let result = parse_path(input);
-        let_assert!(Ok((rest, spath)) = result);
+        assert!(let Ok((rest, spath)) = result);
 
         check!(rest == "");
         check!(spath.segments.len() == 3);
@@ -316,7 +316,7 @@ mod tests {
     fn test_parse_path_with_escaped_tilde() {
         let input = "/foo/a~0b/bar";
         let result = parse_path(input);
-        let_assert!(Ok((rest, spath)) = result);
+        assert!(let Ok((rest, spath)) = result);
 
         check!(rest == "");
         check!(spath.segments.len() == 3);
@@ -329,7 +329,7 @@ mod tests {
     fn test_parse_path_with_multiple_escaped_chars() {
         let input = "/~0foo~1bar/~1baz~0qux";
         let result = parse_path(input);
-        let_assert!(Ok((rest, spath)) = result);
+        assert!(let Ok((rest, spath)) = result);
 
         check!(rest == "");
         check!(spath.segments.len() == 2);
@@ -342,7 +342,7 @@ mod tests {
         let input = "/foo//bar";
         let result = parse_path(input);
 
-        let_assert!(Ok((rest, spath)) = result);
+        assert!(let Ok((rest, spath)) = result);
         check!(rest == "");
         check!(spath.segments.len() == 3);
         check!(spath.segments[0] == Segment::Field(String::from("foo")));

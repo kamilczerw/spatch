@@ -104,7 +104,7 @@ pub fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError>
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, let_assert};
+    use assert2::{check, assert};
     use serde_json::{from_str, json};
 
     use crate::resolve::ResolveError;
@@ -176,7 +176,7 @@ mod tests {
 
         let result = add(&mut doc, "/b/c".try_into().unwrap(), json!({"foo": "bar"}));
 
-        let_assert!(Err(PatchError::ResolveError(e)) = result);
+        assert!(let Err(PatchError::ResolveError(e)) = result);
         check!(e.to_string() == "Field or item not found");
     }
 
@@ -213,7 +213,7 @@ mod tests {
 
         let result = add(&mut doc, "/a/5".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::ArrayIndexOutOfBounds { path, index, len }) = result);
+        assert!(let Err(PatchError::ArrayIndexOutOfBounds { path, index, len }) = result);
 
         check!(path == "/a/5".try_into().unwrap());
         check!(index == 5);
@@ -254,7 +254,7 @@ mod tests {
         // parent "/a" exists but is not object/array
         let result = add(&mut doc, "/a/b".try_into().unwrap(), json!(123));
 
-        let_assert!(Err(PatchError::NotAContainer { parent, actual }) = result);
+        assert!(let Err(PatchError::NotAContainer { parent, actual }) = result);
 
         check!(parent == "/a".try_into().unwrap());
         check!(actual == "number(1)");
@@ -280,7 +280,7 @@ mod tests {
             json!(123),
         );
 
-        let_assert!(Err(PatchError::NotAContainer { parent, actual }) = result);
+        assert!(let Err(PatchError::NotAContainer { parent, actual }) = result);
 
         check!(parent == "/[id=foo]/value".try_into().unwrap());
         check!(actual == "number(1)");
@@ -359,7 +359,7 @@ mod tests {
 
         let result = add(&mut doc, "/a/-1".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
+        assert!(let Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
 
         check!(path == "/a/-1".try_into().unwrap());
         check!(token == "-1");
@@ -371,7 +371,7 @@ mod tests {
 
         let result = add(&mut doc, "/a/notanumber".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
+        assert!(let Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
 
         check!(path == "/a/notanumber".try_into().unwrap());
         check!(token == "notanumber");
@@ -383,7 +383,7 @@ mod tests {
 
         let result = add(&mut doc, "/a/1.0".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
+        assert!(let Err(PatchError::InvalidArrayIndexToken { path, token }) = result);
 
         check!(path == "/a/1.0".try_into().unwrap());
         check!(token == "1.0");
@@ -416,7 +416,7 @@ mod tests {
         // parent "/a/0" exists but is scalar
         let result = add(&mut doc, "/a/0/b".try_into().unwrap(), json!(2));
 
-        let_assert!(Err(PatchError::NotAContainer { parent, actual }) = result);
+        assert!(let Err(PatchError::NotAContainer { parent, actual }) = result);
 
         check!(parent == "/a/0".try_into().unwrap());
         check!(actual == "number(1)");
@@ -489,7 +489,7 @@ mod tests {
             json!(99),
         );
 
-        let_assert!(Err(PatchError::ResolveError(ResolveError::NotFound)) = result);
+        assert!(let Err(PatchError::ResolveError(ResolveError::NotFound)) = result);
     }
 
     #[test]
@@ -503,7 +503,7 @@ mod tests {
 
         let result = add(&mut doc, "/items/[id=baz]".try_into().unwrap(), json!(99));
 
-        let_assert!(Err(PatchError::MissingFinalToken { path }) = result);
+        assert!(let Err(PatchError::MissingFinalToken { path }) = result);
 
         check!(path == "/items/[id=baz]".try_into().unwrap());
     }
@@ -523,7 +523,7 @@ mod tests {
             json!(99),
         );
 
-        let_assert!(Ok(()) = result);
+        assert!(let Ok(()) = result);
         check!(
             doc == json!({
                 "items": [
@@ -549,6 +549,6 @@ mod tests {
             json!(99),
         );
 
-        let_assert!(Err(PatchError::ResolveError(ResolveError::NotFound)) = result);
+        assert!(let Err(PatchError::ResolveError(ResolveError::NotFound)) = result);
     }
 }
