@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 use serde_json::Value;
 
@@ -209,17 +209,18 @@ fn build_key_map(
         if let Value::Object(obj) = item {
             match obj.get(index_key) {
                 Some(value) => match index_key_value_to_filter(value) {
-                    Some(key) => {
-                        if map.contains_key(&key) {
+                    Some(key) => match map.entry(key) {
+                        Entry::Occupied(entry) => {
                             errors.push(DiffError::duplicate_index_key(
                                 &current_path,
                                 index_key,
-                                &key,
+                                entry.key(),
                             ));
-                        } else {
-                            map.insert(key, item.clone());
                         }
-                    }
+                        Entry::Vacant(entry) => {
+                            entry.insert(item.clone());
+                        }
+                    },
                     None => {
                         errors.push(DiffError::non_string_index_key(&current_path, value));
                     }
