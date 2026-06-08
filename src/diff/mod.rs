@@ -7,7 +7,7 @@ pub mod test_util;
 
 use std::ops::{Add, Deref};
 
-pub use options::DiffOptions;
+pub use options::{DiffGranularity, DiffOptions};
 pub use patch_operations::PatchOp;
 use serde::Serialize;
 

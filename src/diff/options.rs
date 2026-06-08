@@ -46,6 +46,11 @@ impl<'a> DiffOptions<'a> {
         self.granularity = DiffGranularity::Compact;
         self
     }
+
+    pub fn with_optional_schema(mut self, schema: Option<&'a serde_json::Value>) -> Self {
+        self.schema = schema;
+        self
+    }
 }
 
 impl<'a> Default for DiffOptions<'a> {

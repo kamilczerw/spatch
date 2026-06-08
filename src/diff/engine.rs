@@ -57,10 +57,7 @@ fn diff_object(
             match left_map.get(key) {
                 // If the key exists in both maps, recurse into the values
                 Some(left_value) => {
-                    let mut child_options = options.clone();
-                    if let Some(sub_schema) = sub_schema {
-                        child_options = child_options.with_schema(sub_schema);
-                    }
+                    let child_options = options.with_optional_schema(sub_schema);
 
                     let child_path = path_pointer.push(crate::path::Segment::Field(key.clone()));
                     diff_recursive(
@@ -132,7 +129,7 @@ fn diff_array(
     });
     match (options.schema, index_key) {
         // If the schema specifies an index key, use keyed diffing
-        (Some(schema), Some(ref key)) => {
+        (Some(_schema), Some(ref key)) => {
             diff_array_keyed(left, right, key, options, path_pointer, patch_ops)
         }
         // Otherwise, use index based diffing
@@ -175,15 +172,11 @@ fn diff_array_keyed(
         })
         .fold(Patch::default(), |acc, p| acc + p);
 
-    let mut child_options = options.clone();
-
-    if let Some(sub_schema) = options
+    let sub_schema = options
         .schema
         .as_ref()
-        .and_then(|schema| schema.get("items"))
-    {
-        child_options = child_options.with_schema(sub_schema);
-    }
+        .and_then(|schema| schema.get("items"));
+    let child_options = options.with_optional_schema(sub_schema);
 
     // Modified elements (same key in both)
     let modified = keys_a
