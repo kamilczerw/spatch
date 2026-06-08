@@ -66,6 +66,8 @@ pub struct DiffOptions<'a> {
     /// `/items/[id=item-42]` instead of index paths such as `/items/0`.
     pub schema: Option<&'a serde_json::Value>,
 
+    pub(crate) root_schema: Option<&'a serde_json::Value>,
+
     /// Controls whether object diffs prefer smaller patches or nested patches.
     pub granularity: DiffGranularity,
 }
@@ -141,6 +143,7 @@ impl<'a> DiffOptions<'a> {
     /// ```
     pub fn with_schema(mut self, schema: &'a serde_json::Value) -> Self {
         self.schema = Some(schema);
+        self.root_schema = Some(schema);
         self
     }
 
@@ -150,6 +153,7 @@ impl<'a> DiffOptions<'a> {
     /// back to pure RFC 6902, index-based diffing.
     pub fn without_schema(mut self) -> Self {
         self.schema = None;
+        self.root_schema = None;
         self
     }
 
@@ -188,12 +192,29 @@ impl<'a> DiffOptions<'a> {
         self.schema = schema;
         self
     }
+
+    pub(crate) fn resolver(&self) -> crate::diff::schema::SchemaResolver<'a> {
+        crate::diff::schema::SchemaResolver::new(self.root_schema)
+    }
+
+    pub(crate) fn property_schema(&self, key: &str) -> Option<&'a serde_json::Value> {
+        self.resolver().property_schema(self.schema, key)
+    }
+
+    pub(crate) fn items_schema(&self) -> Option<&'a serde_json::Value> {
+        self.resolver().items_schema(self.schema)
+    }
+
+    pub(crate) fn index_key(&self) -> Option<&'a str> {
+        self.resolver().index_key(self.schema)
+    }
 }
 
 impl<'a> Default for DiffOptions<'a> {
     fn default() -> Self {
         Self {
             schema: None,
+            root_schema: None,
             granularity: DiffGranularity::Compact,
         }
     }

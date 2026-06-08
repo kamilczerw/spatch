@@ -15,7 +15,7 @@ use super::Patch;
 
 /// Name of the property in the JSON Schema that indicates the index key for arrays.
 /// It's used to identify unique items in an array for diffing purposes.
-const HASH_KEY_PROP_NAME: &str = "indexKey";
+pub(super) const HASH_KEY_PROP_NAME: &str = "indexKey";
 
 pub(super) fn diff_recursive(
     left: &serde_json::Value,
@@ -51,9 +51,7 @@ fn diff_object(
     let inner_patch = right_map
         .iter()
         .map(|(key, right_value)| {
-            let sub_schema = options
-                .schema
-                .and_then(|s| s.get("properties").and_then(|props| props.get(key)));
+            let sub_schema = options.property_schema(key);
             match left_map.get(key) {
                 // If the key exists in both maps, recurse into the values
                 Some(left_value) => {
@@ -122,11 +120,7 @@ fn diff_array(
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     // TODO: emit warning if the schema is missing an index key when the schema is provided
-    let index_key = options.schema.and_then(|s| {
-        s.get(HASH_KEY_PROP_NAME)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    });
+    let index_key = options.index_key().map(str::to_owned);
 
     match index_key {
         // If the schema specifies an index key, use keyed diffing
@@ -173,10 +167,7 @@ fn diff_array_keyed(
         })
         .fold(Patch::default(), |acc, p| acc + p);
 
-    let sub_schema = options
-        .schema
-        .as_ref()
-        .and_then(|schema| schema.get("items"));
+    let sub_schema = options.items_schema();
     let child_options = options.with_optional_schema(sub_schema);
 
     // Modified elements (same key in both)
@@ -246,8 +237,8 @@ fn diff_array_indexed(
     let len_left = left_array.len();
     let len_right = right_array.len();
 
-    let item_options = if let Some(sub_schema) = options.schema.and_then(|s| s.get("items")) {
-        options.with_schema(sub_schema)
+    let item_options = if let Some(sub_schema) = options.items_schema() {
+        options.with_optional_schema(Some(sub_schema))
     } else {
         options.without_schema()
     };

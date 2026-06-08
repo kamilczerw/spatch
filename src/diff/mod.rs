@@ -53,6 +53,7 @@ mod engine;
 mod error;
 mod options;
 mod patch_operations;
+mod schema;
 #[cfg(test)]
 pub mod test_util;
 
