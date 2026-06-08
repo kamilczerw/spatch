@@ -127,13 +127,14 @@ fn diff_array(
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     });
-    match (options.schema, index_key) {
+
+    match index_key {
         // If the schema specifies an index key, use keyed diffing
-        (Some(_schema), Some(ref key)) => {
+        Some(ref key) if options.schema.is_some() => {
             diff_array_keyed(left, right, key, options, path_pointer, patch_ops)
         }
         // Otherwise, use index based diffing
-        (_, _) => diff_array_indexed(left, right, options, path_pointer, patch_ops),
+        _ => diff_array_indexed(left, right, options, path_pointer, patch_ops),
     }
 }
 
