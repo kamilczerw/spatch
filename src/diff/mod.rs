@@ -165,7 +165,7 @@ impl Iterator for Patch {
 pub fn diff(
     left: &serde_json::Value,
     right: &serde_json::Value,
-    options: DiffOptions,
+    options: DiffOptions<'_>,
 ) -> Result<Patch, DiffErrorSummary> {
     let (patch, error_summary) =
         engine::diff_recursive(left, right, options, &Spath::default(), &Patch::default());

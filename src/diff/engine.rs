@@ -117,7 +117,7 @@ fn diff_object(
 fn diff_array(
     left: &[Value],
     right: &[Value],
-    options: DiffOptions,
+    options: DiffOptions<'_>,
     path_pointer: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
