@@ -604,6 +604,186 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    #[test]
+    fn schema_ref_items_should_use_nested_array_index_keys() {
+        let schema = serde_json::json!({
+            "properties": {
+                "tracks": {
+                    "type": "array",
+                    "indexKey": "id",
+                    "items": { "$ref": "#/$defs/track" }
+                }
+            },
+            "$defs": {
+                "track": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "levels": {
+                            "type": "array",
+                            "indexKey": "id",
+                            "items": { "$ref": "#/$defs/level" }
+                        }
+                    }
+                },
+                "level": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "xp": { "type": "integer" }
+                    }
+                }
+            }
+        });
+        let left = serde_json::json!({
+            "tracks": [{
+                "id": "free",
+                "levels": [{ "id": "1", "xp": 100 }]
+            }]
+        });
+        let right = serde_json::json!({
+            "tracks": [{
+                "id": "free",
+                "levels": [{ "id": "1", "xp": 200 }]
+            }]
+        });
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().with_schema(&schema).granular(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![PatchOp::replace(
+            path("/tracks/[id=free]/levels/[id=1]/xp"),
+            serde_json::json!(200),
+        )]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn schema_ref_items_should_use_deeply_nested_array_index_keys() {
+        let schema = serde_json::json!({
+            "properties": {
+                "tracks": {
+                    "type": "array",
+                    "indexKey": "id",
+                    "items": { "$ref": "#/$defs/track" }
+                }
+            },
+            "$defs": {
+                "track": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "levels": {
+                            "type": "array",
+                            "indexKey": "id",
+                            "items": { "$ref": "#/$defs/level" }
+                        }
+                    }
+                },
+                "level": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "rewards": {
+                            "type": "array",
+                            "indexKey": "id",
+                            "items": { "$ref": "#/$defs/reward" }
+                        }
+                    }
+                },
+                "reward": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "amount": { "type": "integer" }
+                    }
+                }
+            }
+        });
+        let left = serde_json::json!({
+            "tracks": [{
+                "id": "free",
+                "levels": [{
+                    "id": "1",
+                    "rewards": [{ "id": "reward-1", "amount": 100 }]
+                }]
+            }]
+        });
+        let right = serde_json::json!({
+            "tracks": [{
+                "id": "free",
+                "levels": [{
+                    "id": "1",
+                    "rewards": [{ "id": "reward-1", "amount": 200 }]
+                }]
+            }]
+        });
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().with_schema(&schema).granular(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![PatchOp::replace(
+            path("/tracks/[id=free]/levels/[id=1]/rewards/[id=reward-1]/amount"),
+            serde_json::json!(200),
+        )]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn schema_index_key_should_accept_numeric_values() {
+        let schema = serde_json::json!({
+            "properties": {
+                "levels": {
+                    "type": "array",
+                    "indexKey": "id",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "integer" },
+                            "xp": { "type": "integer" }
+                        }
+                    }
+                }
+            }
+        });
+        let left = serde_json::json!({
+            "levels": [{ "id": 1, "xp": 100 }]
+        });
+        let right = serde_json::json!({
+            "levels": [{ "id": 1, "xp": 200 }]
+        });
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().with_schema(&schema).granular(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![PatchOp::replace(
+            path("/levels/[id=1]/xp"),
+            serde_json::json!(200),
+        )]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops == expected_patch);
+    }
+
     // NOTE: We currently do not handle move operations in diffing.
     // #[test]
     // fn test_diff_recursive_with_both_objects_should_move() {
@@ -743,32 +923,31 @@ mod tests {
     }
 
     #[test]
-    fn diff_with_schema_and_index_key_not_string_should_fail() {
+    fn diff_with_schema_and_unrepresentable_index_key_values_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
         let options = DiffOptions::new().with_schema(&schema);
 
         let left = serde_json::json!({"foo": [
-            {"id": 123, "count": 2},
-            {"id": "bla", "count": 10},
+            {"id": {"nested": "object"}, "count": 2},
+            {"id": ["array"], "count": 3},
+            {"id": null, "count": 4},
         ]});
-        let right = serde_json::json!({"foo": [
-            {"id": 123, "count": 2},
-            {"id": "bla", "count": 3},
-        ]});
+        let right = left.clone();
 
         let (_patch_ops, diff_errors) =
             diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
-        check!(diff_errors.left.len() == 1);
-        check!(diff_errors.right.len() == 1);
-        check!(
-            diff_errors.left[0]
-                == DiffError::non_string_index_key(&path("/foo/0"), &serde_json::json!(123))
-        );
-        check!(
-            diff_errors.right[0]
-                == DiffError::non_string_index_key(&path("/foo/0"), &serde_json::json!(123))
-        );
+        let expected_errors = vec![
+            DiffError::non_string_index_key(
+                &path("/foo/0"),
+                &serde_json::json!({"nested": "object"}),
+            ),
+            DiffError::non_string_index_key(&path("/foo/1"), &serde_json::json!(["array"])),
+            DiffError::non_string_index_key(&path("/foo/2"), &serde_json::json!(null)),
+        ];
+
+        check!(diff_errors.left == expected_errors);
+        check!(diff_errors.right == expected_errors);
     }
 
     #[test]
