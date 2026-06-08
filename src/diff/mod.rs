@@ -5,7 +5,10 @@
 //!
 //! - [`DiffOptions::with_schema`] enables semantic array paths such as
 //!   `/users/[id=u-1]/name`, so patches talk about the item that changed rather
-//!   than the position it happened to occupy.
+//!   than the position it happened to occupy. Schema-aware diffing follows local
+//!   JSON Schema `$ref`s when walking `properties` and `items`, so nested arrays
+//!   can produce paths like `/levels/[id=1]/xp` and
+//!   `/tracks/[id=free]/levels/[id=1]/rewards/[id=reward-1]/amount`.
 //! - [`DiffOptions::granular`] keeps object changes as nested operations when
 //!   you want readable, review-friendly diffs. The default compact mode still
 //!   keeps payloads small by collapsing large object changes when a parent
@@ -124,6 +127,12 @@ impl Iterator for Patch {
 /// paths based on `indexKey`, and use [`DiffOptions::granular`] when you prefer
 /// nested, review-friendly object changes over compact parent replacements.
 ///
+/// Schema-aware diffing follows local JSON Schema `$ref`s in the provided schema
+/// document while traversing object properties and array items. Array item
+/// identity values can be strings, numbers, or booleans. Object, array, and
+/// `null` identity values are rejected because they cannot be emitted as semantic
+/// path filters.
+///
 /// # Compact by default
 ///
 /// ```rust
@@ -162,6 +171,38 @@ impl Iterator for Patch {
 /// let patch_json = serde_json::to_value(&patch).unwrap();
 ///
 /// assert_eq!(patch_json[0]["path"], "/tasks/[id=ship-docs]/done");
+/// ```
+///
+/// # Nested `$ref` schemas and numeric identity values
+///
+/// ```rust
+/// use serde_json::json;
+/// use spatch::diff::{diff, DiffOptions};
+///
+/// let schema = json!({
+///     "properties": {
+///         "levels": {
+///             "indexKey": "id",
+///             "items": { "$ref": "#/$defs/level" }
+///         }
+///     },
+///     "$defs": {
+///         "level": {
+///             "properties": {
+///                 "xp": {}
+///             }
+///         }
+///     }
+/// });
+///
+/// let before = json!({"levels": [{"id": 1, "xp": 100}]});
+/// let after = json!({"levels": [{"id": 1, "xp": 150}]});
+///
+/// let patch = diff(&before, &after, DiffOptions::new().with_schema(&schema).granular())
+///     .unwrap();
+/// let patch_json = serde_json::to_value(&patch).unwrap();
+///
+/// assert_eq!(patch_json[0]["path"], "/levels/[id=1]/xp");
 /// ```
 pub fn diff(
     left: &serde_json::Value,

@@ -5,15 +5,24 @@ use crate::path::Spath;
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
 #[allow(clippy::enum_variant_names)]
 pub enum DiffError {
+    /// An array item did not contain the property named by the array schema's
+    /// `indexKey`.
     #[error("Item {path} is missing index key '{index_key}'")]
     MissingIndexKey { path: Spath, index_key: String },
 
+    /// An array item's `indexKey` value cannot be represented as a semantic path
+    /// filter.
+    ///
+    /// Despite the historical variant name, strings, numbers, and booleans are
+    /// accepted as semantic identity values. This error is returned for object,
+    /// array, and `null` values.
     #[error("Item {path} has non-string index key: {index_key}")]
     NonStringIndexKey {
         path: Spath,
         index_key: serde_json::Value,
     },
 
+    /// Two array items had the same representable `indexKey` value.
     #[error("Item {path} has duplicate index key '{index_key}' with value '{value}'")]
     DuplicateIndexKey {
         path: Spath,
