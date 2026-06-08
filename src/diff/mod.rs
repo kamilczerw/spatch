@@ -1,11 +1,13 @@
 mod engine;
 mod error;
+mod options;
 mod patch_operations;
 #[cfg(test)]
 pub mod test_util;
 
 use std::ops::{Add, Deref};
 
+pub use options::DiffOptions;
 pub use patch_operations::PatchOp;
 use serde::Serialize;
 
@@ -61,10 +63,10 @@ impl Iterator for Patch {
 pub fn diff(
     left: &serde_json::Value,
     right: &serde_json::Value,
-    schema: Option<&serde_json::Value>,
+    options: DiffOptions,
 ) -> Result<Patch, DiffErrorSummary> {
     let (patch, error_summary) =
-        engine::diff_recursive(left, right, schema, &Spath::default(), &Patch::default());
+        engine::diff_recursive(left, right, options, &Spath::default(), &Patch::default());
 
     if error_summary.is_empty() {
         Ok(patch)
@@ -75,7 +77,7 @@ pub fn diff(
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, assert};
+    use assert2::{assert, check};
     use serde_json::json;
 
     use super::*;
@@ -92,7 +94,9 @@ mod tests {
             "age": 31,
         });
 
-        let patch = diff(&left, &right, None).unwrap();
+        let diff_options = DiffOptions::new();
+
+        let patch = diff(&left, &right, diff_options).unwrap();
         check!(patch.len() == 1);
         assert!(let PatchOp::Replace { path, value } = &patch[0]);
         check!(path.to_string() == "/age");

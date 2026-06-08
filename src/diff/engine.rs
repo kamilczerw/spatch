@@ -3,7 +3,11 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use crate::{
-    diff::error::{DiffError, DiffErrorSummary},
+    diff::{
+        DiffOptions,
+        error::{DiffError, DiffErrorSummary},
+        options::DiffGranularity,
+    },
     path::Spath,
 };
 
@@ -16,16 +20,16 @@ const HASH_KEY_PROP_NAME: &str = "indexKey";
 pub(super) fn diff_recursive(
     left: &serde_json::Value,
     right: &serde_json::Value,
-    schema: Option<&serde_json::Value>,
+    options: DiffOptions,
     path_pos: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     match (left, right) {
         (Value::Object(left_map), Value::Object(right_map)) => {
-            diff_object(left_map, right_map, schema, path_pos, patch_ops)
+            diff_object(left_map, right_map, options, path_pos, patch_ops)
         }
         (Value::Array(left_array), Value::Array(right_array)) => {
-            diff_array(left_array, right_array, schema, path_pos, patch_ops)
+            diff_array(left_array, right_array, options, path_pos, patch_ops)
         }
         (left, right) if left == right => (Patch::default(), DiffErrorSummary::empty()), // Values are equal, no diff needed
         (_, right) => {
@@ -40,20 +44,32 @@ pub(super) fn diff_recursive(
 fn diff_object(
     left_map: &serde_json::Map<String, Value>,
     right_map: &serde_json::Map<String, Value>,
-    schema: Option<&serde_json::Value>,
+    options: DiffOptions,
     path_pointer: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     let inner_patch = right_map
         .iter()
         .map(|(key, right_value)| {
-            let sub_schema =
-                schema.and_then(|s| s.get("properties").and_then(|props| props.get(key)));
+            let sub_schema = options
+                .schema
+                .and_then(|s| s.get("properties").and_then(|props| props.get(key)));
             match left_map.get(key) {
                 // If the key exists in both maps, recurse into the values
                 Some(left_value) => {
+                    let mut child_options = options.clone();
+                    if let Some(sub_schema) = sub_schema {
+                        child_options = child_options.with_schema(sub_schema);
+                    }
+
                     let child_path = path_pointer.push(crate::path::Segment::Field(key.clone()));
-                    diff_recursive(left_value, right_value, sub_schema, &child_path, patch_ops)
+                    diff_recursive(
+                        left_value,
+                        right_value,
+                        child_options,
+                        &child_path,
+                        patch_ops,
+                    )
                 }
                 // Otherwise, it's an addition
                 None => {
@@ -89,33 +105,38 @@ fn diff_object(
     let inner_patch_size_bytes = serde_json::to_vec(&computed_patch.0).unwrap().len();
     let replace_patch_size_bytes = serde_json::to_vec(&replace_patch).unwrap().len();
 
-    if replace_patch_size_bytes < inner_patch_size_bytes {
-        (replace_patch, inner_patch.1)
-    } else {
-        computed_patch
+    match options.granularity {
+        DiffGranularity::Compact => {
+            if replace_patch_size_bytes < inner_patch_size_bytes {
+                (replace_patch, inner_patch.1)
+            } else {
+                computed_patch
+            }
+        }
+        DiffGranularity::Granular => computed_patch,
     }
 }
 
 fn diff_array(
     left: &[Value],
     right: &[Value],
-    schema: Option<&Value>,
+    options: DiffOptions,
     path_pointer: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     // TODO: emit warning if the schema is missing an index key when the schema is provided
-    let index_key = schema.and_then(|s| {
+    let index_key = options.schema.and_then(|s| {
         s.get(HASH_KEY_PROP_NAME)
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     });
-    match (schema, index_key) {
+    match (options.schema, index_key) {
         // If the schema specifies an index key, use keyed diffing
         (Some(schema), Some(ref key)) => {
-            diff_array_keyed(left, right, key, schema, path_pointer, patch_ops)
+            diff_array_keyed(left, right, key, options, path_pointer, patch_ops)
         }
         // Otherwise, use index based diffing
-        (_, _) => diff_array_indexed(left, right, schema, path_pointer, patch_ops),
+        (_, _) => diff_array_indexed(left, right, options, path_pointer, patch_ops),
     }
 }
 
@@ -123,7 +144,7 @@ fn diff_array_keyed(
     left: &[Value],
     right: &[Value],
     index_key: &str,
-    schema: &Value,
+    options: DiffOptions,
     path_pointer: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
@@ -154,7 +175,15 @@ fn diff_array_keyed(
         })
         .fold(Patch::default(), |acc, p| acc + p);
 
-    let item_schema = schema.get("items");
+    let mut child_options = options.clone();
+
+    if let Some(sub_schema) = options
+        .schema
+        .as_ref()
+        .and_then(|schema| schema.get("items"))
+    {
+        child_options = child_options.with_schema(sub_schema);
+    }
 
     // Modified elements (same key in both)
     let modified = keys_a
@@ -164,7 +193,13 @@ fn diff_array_keyed(
             let value_left = &map_left[key];
             let value_right = &map_right[key];
 
-            diff_recursive(value_left, value_right, item_schema, &child_path, patch_ops)
+            diff_recursive(
+                value_left,
+                value_right,
+                child_options,
+                &child_path,
+                patch_ops,
+            )
         })
         .fold((Patch::default(), DiffErrorSummary::empty()), |acc, p| {
             (acc.0 + p.0, acc.1 + p.1)
@@ -210,14 +245,18 @@ fn build_key_map(
 fn diff_array_indexed(
     left_array: &[Value],
     right_array: &[Value],
-    schema: Option<&Value>,
+    options: DiffOptions,
     path_pointer: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     let len_left = left_array.len();
     let len_right = right_array.len();
 
-    let item_schema = schema.and_then(|s| s.get("items"));
+    let item_options = if let Some(sub_schema) = options.schema.and_then(|s| s.get("items")) {
+        options.with_schema(sub_schema)
+    } else {
+        options.without_schema()
+    };
 
     // --------
     // Fast paths (deterministic, human-friendly)
@@ -289,7 +328,7 @@ fn diff_array_indexed(
             diff_recursive(
                 &left_array[i],
                 &right_array[i],
-                item_schema,
+                item_options,
                 &child_path,
                 patch_ops,
             )
@@ -341,8 +380,13 @@ mod tests {
         let left = serde_json::json!("foo");
         let right = serde_json::json!("foo");
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         // No patch operations should be generated for equal values
         check!(diff_errors.is_empty() == true);
@@ -354,8 +398,13 @@ mod tests {
         let left = serde_json::json!("foo");
         let right = serde_json::json!("bar");
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::replace(Spath::default(), right.clone())]);
 
@@ -368,8 +417,13 @@ mod tests {
         let left = serde_json::json!("foo");
         let right = serde_json::json!({"baz": 42});
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::replace(Spath::default(), right.clone())]);
 
@@ -382,8 +436,13 @@ mod tests {
         let left = serde_json::json!({"foo": 43});
         let right = serde_json::json!({"foo": 42});
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::replace(
             path("/foo"),
@@ -399,8 +458,13 @@ mod tests {
         let left = serde_json::json!({"foo": 43, "bar": 1});
         let right = serde_json::json!({"foo": 43});
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::remove(path("/bar"))]);
 
@@ -413,8 +477,13 @@ mod tests {
         let left = serde_json::json!({"foo": 43});
         let right = serde_json::json!({"foo": 43, "bar": 1});
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::add(path("/bar"), Value::Number(1.into()))]);
 
@@ -440,7 +509,7 @@ mod tests {
     #[test]
     fn test_diff_recursive_with_schema_remove_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
-        let schema = Some(&schema);
+        let options = DiffOptions::new().with_schema(&schema);
 
         let left = serde_json::json!({"foo": [
             {"id": "abc", "count": 2},
@@ -451,7 +520,7 @@ mod tests {
         ]});
 
         let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, schema, &Spath::default(), &Patch::default());
+            diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
         let expected_patch = Patch::new(vec![PatchOp::remove(path("/foo/[id=bla]"))]);
 
@@ -462,7 +531,7 @@ mod tests {
     #[test]
     fn test_diff_recursive_with_schema_add_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
-        let schema = Some(&schema);
+        let options = DiffOptions::new().with_schema(&schema);
 
         let left = serde_json::json!({"foo": [
             {"id": "abc", "count": 2},
@@ -473,7 +542,7 @@ mod tests {
         ]});
 
         let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, schema, &Spath::default(), &Patch::default());
+            diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
         let expected_patch = Patch::new(vec![PatchOp::add(
             path("/foo/[id=bla]"),
@@ -487,7 +556,7 @@ mod tests {
     #[test]
     fn test_diff_recursive_with_schema_modify_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
-        let schema = Some(&schema);
+        let options = DiffOptions::new().with_schema(&schema);
 
         let left = serde_json::json!({"foo": [
             {"id": "abc", "count": 2},
@@ -499,7 +568,7 @@ mod tests {
         ]});
 
         let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, schema, &Spath::default(), &Patch::default());
+            diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
         let expected_patch = Patch::new(vec![PatchOp::replace(
             path("/foo/[id=bla]/count"),
@@ -513,7 +582,7 @@ mod tests {
     #[test]
     fn diff_with_schema_and_not_matching_index_key_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
-        let schema = Some(&schema);
+        let options = DiffOptions::new().with_schema(&schema);
 
         let left = serde_json::json!({"foo": [
             {"key": "abc", "count": 2},
@@ -525,7 +594,7 @@ mod tests {
         ]});
 
         let (_patch_ops, diff_errors) =
-            diff_recursive(&left, &right, schema, &Spath::default(), &Patch::default());
+            diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
         check!(diff_errors.left.len() == 2);
         check!(diff_errors.right.len() == 2);
@@ -538,7 +607,7 @@ mod tests {
     #[test]
     fn diff_with_schema_and_duplicate_index_key_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
-        let schema = Some(&schema);
+        let options = DiffOptions::new().with_schema(&schema);
 
         let left = serde_json::json!({"foo": [
             {"id": "abc", "count": 2},
@@ -550,7 +619,7 @@ mod tests {
         ]});
 
         let (_patch_ops, diff_errors) =
-            diff_recursive(&left, &right, schema, &Spath::default(), &Patch::default());
+            diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
         check!(diff_errors.left.len() == 1);
         check!(diff_errors.right.len() == 1);
@@ -563,7 +632,7 @@ mod tests {
     #[test]
     fn diff_with_schema_and_index_key_not_string_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
-        let schema = Some(&schema);
+        let options = DiffOptions::new().with_schema(&schema);
 
         let left = serde_json::json!({"foo": [
             {"id": 123, "count": 2},
@@ -575,7 +644,7 @@ mod tests {
         ]});
 
         let (_patch_ops, diff_errors) =
-            diff_recursive(&left, &right, schema, &Spath::default(), &Patch::default());
+            diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
         check!(diff_errors.left.len() == 1);
         check!(diff_errors.right.len() == 1);
@@ -592,7 +661,7 @@ mod tests {
     #[test]
     fn test_diff_recursive_with_both_objects_add_and_remove() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
-        let schema = Some(&schema);
+        let options = DiffOptions::new().with_schema(&schema);
 
         let left = serde_json::json!({"bar": 1, "foo": [
             {"id": "abc", "count": 2},
@@ -604,7 +673,7 @@ mod tests {
         ]});
 
         let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, schema, &Spath::default(), &Patch::default());
+            diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
         let expected_patch = Patch::new(vec![
             PatchOp::replace(path("/foo/[id=bla]/count"), Value::Number(10.into())),
@@ -627,8 +696,13 @@ mod tests {
             {"id": "abc", "count": 2},
         ]});
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::remove(path("/foo/1"))]);
 
@@ -647,8 +721,13 @@ mod tests {
             {"id": "bla", "count": 3},
         ]});
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         // TODO: The result should be a just removal of the object at index 0
         // Currently the emitted patch is not optimal, but valid
@@ -671,8 +750,13 @@ mod tests {
             {"id": "lol", "count": 10},
         ]});
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::replace(
             path("/foo/1"),
@@ -694,8 +778,13 @@ mod tests {
             {"id": "lol", "count": 10},
         ]});
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::add(
             path("/foo/-"),
@@ -724,8 +813,13 @@ mod tests {
                 } => {
                     let comment = comment.unwrap_or_default();
 
-                    let (patch_ops, _diff_errors) =
-                        diff_recursive(&doc, &expected, None, &Spath::default(), &Patch::default());
+                    let (patch_ops, _diff_errors) = diff_recursive(
+                        &doc,
+                        &expected,
+                        DiffOptions::new(),
+                        &Spath::default(),
+                        &Patch::default(),
+                    );
 
                     let mut generated_patch_json = Vec::new();
                     for op in patch_ops.iter() {
@@ -776,8 +870,13 @@ mod tests {
             "d": 4,
         });
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![PatchOp::replace(Spath::default(), right.clone())]);
 
@@ -787,12 +886,52 @@ mod tests {
     }
 
     #[test]
+    fn diff_object_should_return_granular_list_of_patches_when_majority_of_fields_changed_and_granular_is_used()
+     {
+        let left = serde_json::json!({
+            "a": 1,
+            "b": 2,
+            "c": 3,
+            "d": 4,
+        });
+        let right = serde_json::json!({
+            "a": 10,
+            "b": 20,
+            "c": 30,
+            "d": 4,
+        });
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().granular(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![
+            PatchOp::replace(path("/a"), serde_json::json!(10)),
+            PatchOp::replace(path("/b"), serde_json::json!(20)),
+            PatchOp::replace(path("/c"), serde_json::json!(30)),
+        ]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops.len() == 3);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
     fn diff_array_indexed_should_handle_pure_truncate() {
         let left = serde_json::json!(["a", "b", "c", "d"]);
         let right = serde_json::json!(["a", "b"]);
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![
             PatchOp::remove(path("/3")),
@@ -809,8 +948,13 @@ mod tests {
         let left = serde_json::json!(["a", "b"]);
         let right = serde_json::json!(["a", "b", "c", "d"]);
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![
             PatchOp::add(path("/-"), serde_json::json!("c")),
@@ -827,8 +971,13 @@ mod tests {
         let left = serde_json::json!(["a", "b", "c", "d"]);
         let right = serde_json::json!(["c", "d"]);
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![
             PatchOp::remove(path("/0")),
@@ -845,8 +994,13 @@ mod tests {
         let left = serde_json::json!(["c", "d"]);
         let right = serde_json::json!(["a", "b", "c", "d"]);
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![
             PatchOp::add(path("/0"), serde_json::json!("b")),
@@ -863,8 +1017,13 @@ mod tests {
         let left = serde_json::json!(["a", "b", "c"]);
         let right = serde_json::json!(["a", "x", "c", "d"]);
 
-        let (patch_ops, diff_errors) =
-            diff_recursive(&left, &right, None, &Spath::default(), &Patch::default());
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        );
 
         let expected_patch = Patch::new(vec![
             PatchOp::replace(path("/1"), serde_json::json!("x")),
