@@ -44,6 +44,8 @@ down to ordinary RFC 6902 patches.
 - Generate JSON Patch diffs
   - Pure RFC 6902 (no schema)
   - Schema‑aware diffs using semantic array paths
+  - Compact or granular object diffs, depending on whether you want smaller
+    patches or review-friendly patches
 - Apply JSON Patch operations from a file
 - Read values at a path
   - Standard JSON Pointer
@@ -149,6 +151,122 @@ Will produce a JSON Patch with semantic array paths:
 > To let spatch know which property to use as identity key for array elements, you
 > **MUST** provide a JSON Schema that defines the array with `indexKey: "{identity-property-name}"`.
 > Otherwise, spatch will fall back to index-based addressing.
+
+### Library
+
+Spatch is designed to be pleasant to use directly from Rust. The `diff` API takes
+`DiffOptions`, so you can choose the patch shape that fits your product:
+
+- use **compact** diffs when patches are stored, sent over the wire, or optimized
+  for size;
+- use **granular** diffs when patches will be reviewed by humans, shown in a UI,
+  or used as audit-log entries;
+- add a schema when arrays have stable identities and you want paths that survive
+  inserts, removals, and reordering.
+
+#### Stable array diffs with schema-aware paths
+
+With a schema, array elements can be addressed by identity instead of by index.
+That means the patch below points at `u-2` even though the array order changed.
+
+```rust
+use serde_json::json;
+use spatch::diff::{diff, DiffOptions};
+
+let schema = json!({
+    "properties": {
+        "users": {
+            "indexKey": "id",
+            "items": {
+                "properties": {
+                    "name": {}
+                }
+            }
+        }
+    }
+});
+
+let before = json!({
+    "users": [
+        {"id": "u-1", "name": "Ada"},
+        {"id": "u-2", "name": "Grace"}
+    ]
+});
+
+let after = json!({
+    "users": [
+        {"id": "u-2", "name": "Grace Hopper"},
+        {"id": "u-1", "name": "Ada"}
+    ]
+});
+
+let patch = diff(
+    &before,
+    &after,
+    DiffOptions::new().with_schema(&schema).granular(),
+)?;
+```
+
+The generated patch is stable and easy to understand:
+
+```json
+[
+  {
+    "op": "replace",
+    "path": "/users/[id=u-2]/name",
+    "value": "Grace Hopper"
+  }
+]
+```
+
+#### Choose compact or granular object diffs
+
+`DiffOptions::new()` defaults to compact mode. Compact mode keeps patches small
+and may replace a parent object when that is shorter than many nested operations.
+
+```rust
+use serde_json::json;
+use spatch::diff::{diff, DiffOptions};
+
+let before = json!({
+    "settings": {
+        "theme": "light",
+        "language": "en",
+        "notifications": true
+    }
+});
+
+let after = json!({
+    "settings": {
+        "theme": "dark",
+        "language": "pl",
+        "notifications": false
+    }
+});
+
+let compact_patch = diff(&before, &after, DiffOptions::new().compact())?;
+```
+
+When you care about readability, choose granular mode. Spatch keeps walking into
+objects and emits the specific fields that changed:
+
+```rust
+let granular_patch = diff(&before, &after, DiffOptions::new().granular())?;
+```
+
+Example granular output:
+
+```json
+[
+  { "op": "replace", "path": "/settings/theme", "value": "dark" },
+  { "op": "replace", "path": "/settings/language", "value": "pl" },
+  { "op": "replace", "path": "/settings/notifications", "value": false }
+]
+```
+
+Both modes still produce JSON Patch operations. You can pick the representation
+that is best for your users without changing the patch format your system stores
+or transmits.
 
 ## Why This Exists
 

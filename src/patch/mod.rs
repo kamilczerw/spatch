@@ -44,7 +44,7 @@ pub fn apply(doc: &Value, patch: &[PatchOp]) -> Result<Value, PatchError> {
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, assert};
+    use assert2::{assert, check};
     use serde_json::json;
 
     use super::*;

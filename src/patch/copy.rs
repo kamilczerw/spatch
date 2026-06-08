@@ -29,7 +29,7 @@ pub fn copy(doc: &mut Value, from: Spath, path: Spath) -> Result<(), PatchError>
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, assert};
+    use assert2::{assert, check};
     use serde_json::json;
 
     use crate::resolve::ResolveError;
@@ -40,7 +40,7 @@ mod tests {
     fn copy_from_nonexistent_path_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 copy(&mut doc, "/c".try_into().unwrap(), "/d".try_into().unwrap())
         );

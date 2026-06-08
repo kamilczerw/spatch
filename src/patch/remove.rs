@@ -69,7 +69,7 @@ fn find_array_index(arr: &[Value], filters: &[(String, String)]) -> Option<usize
 #[cfg(test)]
 mod tests {
 
-    use assert2::{check, assert};
+    use assert2::{assert, check};
     use serde_json::json;
 
     use crate::resolve::ResolveError;
@@ -105,7 +105,7 @@ mod tests {
     fn remove_non_existing_field_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::TargetNotFound { path }) = remove(&mut doc, "/c".try_into().unwrap())
         );
 
@@ -118,7 +118,7 @@ mod tests {
     fn remove_field_from_non_object_should_fail() {
         let mut doc = json!({"a": [1, 2, 3]});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::InvalidArrayIndexToken { path, token }) =
                 remove(&mut doc, "/a/b".try_into().unwrap())
         );
@@ -168,7 +168,7 @@ mod tests {
             ]
         });
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 remove(&mut doc, "/items/[id=item3]/value".try_into().unwrap())
         );
@@ -187,7 +187,7 @@ mod tests {
     fn remove_from_empty_document_should_fail() {
         let mut doc = json!({});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::TargetNotFound { path }) = remove(&mut doc, "/a".try_into().unwrap())
         );
 
@@ -209,7 +209,7 @@ mod tests {
     fn remove_from_array_out_of_bounds_should_fail() {
         let mut doc = json!([1, 2, 3]);
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ArrayIndexOutOfBounds { path, index, len }) =
                 remove(&mut doc, "/3".try_into().unwrap())
         );
@@ -225,7 +225,7 @@ mod tests {
     fn remove_from_non_array_should_fail() {
         let mut doc = json!({"a": 1, "b": 2});
 
-        assert!(let 
+        assert!(let
             Err(PatchError::NotAContainer { parent, actual }) =
                 remove(&mut doc, "/a/0".try_into().unwrap())
         );
@@ -303,7 +303,7 @@ mod tests {
             ]
         });
 
-        assert!(let 
+        assert!(let
             Err(PatchError::ResolveError(ResolveError::NotFound)) =
                 remove(&mut doc, "/items/[id=item3]".try_into().unwrap())
         );
@@ -328,7 +328,7 @@ mod tests {
             ]
         });
 
-        assert!(let 
+        assert!(let
             Ok(()) = remove(
                 &mut doc,
                 "/items/[type=A, id=item3]/value".try_into().unwrap()

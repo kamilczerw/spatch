@@ -1,16 +1,74 @@
+//! Generate JSON Patch diffs, with optional schema-aware array paths.
+//!
+//! The diff API produces JSON Patch operations while giving you two tools that
+//! make patches more useful in real applications:
+//!
+//! - [`DiffOptions::with_schema`] enables semantic array paths such as
+//!   `/users/[id=u-1]/name`, so patches talk about the item that changed rather
+//!   than the position it happened to occupy.
+//! - [`DiffOptions::granular`] keeps object changes as nested operations when
+//!   you want readable, review-friendly diffs. The default compact mode still
+//!   keeps payloads small by collapsing large object changes when a parent
+//!   replacement is shorter.
+//!
+//! # Example: a stable patch for an array item
+//!
+//! ```rust
+//! use serde_json::json;
+//! use spatch::diff::{diff, DiffOptions};
+//!
+//! let schema = json!({
+//!     "properties": {
+//!         "users": {
+//!             "indexKey": "id",
+//!             "items": {
+//!                 "properties": {
+//!                     "name": {}
+//!                 }
+//!             }
+//!         }
+//!     }
+//! });
+//!
+//! let before = json!({
+//!     "users": [
+//!         {"id": "u-1", "name": "Ada"},
+//!         {"id": "u-2", "name": "Grace"}
+//!     ]
+//! });
+//! let after = json!({
+//!     "users": [
+//!         {"id": "u-2", "name": "Grace Hopper"},
+//!         {"id": "u-1", "name": "Ada"}
+//!     ]
+//! });
+//!
+//! let patch = diff(&before, &after, DiffOptions::new().with_schema(&schema).granular())
+//!     .unwrap();
+//! let patch_json = serde_json::to_value(&patch).unwrap();
+//!
+//! assert_eq!(patch_json[0]["path"], "/users/[id=u-2]/name");
+//! ```
 mod engine;
 mod error;
+mod options;
 mod patch_operations;
 #[cfg(test)]
 pub mod test_util;
 
 use std::ops::{Add, Deref};
 
+pub use options::{DiffGranularity, DiffOptions};
 pub use patch_operations::PatchOp;
 use serde::Serialize;
 
 use crate::{diff::error::DiffErrorSummary, path::Spath};
 
+/// A sequence of JSON Patch operations produced by [`diff`].
+///
+/// `Patch` serializes as a standard JSON Patch array. Paths may be regular JSON
+/// Pointer paths, such as `/items/0/name`, or spatch semantic paths, such as
+/// `/items/[id=item-42]/name`, when schema-aware diffing is enabled.
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Clone)]
 pub struct Patch(Vec<PatchOp>);
 
@@ -58,13 +116,59 @@ impl Iterator for Patch {
     }
 }
 
+/// Computes a patch that transforms `left` into `right`.
+///
+/// By default, spatch emits ordinary RFC 6902-style, index-based paths. Provide
+/// a schema through [`DiffOptions::with_schema`] to generate semantic array
+/// paths based on `indexKey`, and use [`DiffOptions::granular`] when you prefer
+/// nested, review-friendly object changes over compact parent replacements.
+///
+/// # Compact by default
+///
+/// ```rust
+/// use serde_json::json;
+/// use spatch::diff::{diff, DiffOptions};
+///
+/// let before = json!({"name": "Ada", "city": "London"});
+/// let after = json!({"name": "Ada", "city": "Oxford"});
+///
+/// let patch = diff(&before, &after, DiffOptions::new()).unwrap();
+/// let patch_json = serde_json::to_value(&patch).unwrap();
+///
+/// assert_eq!(patch_json[0]["op"], "replace");
+/// ```
+///
+/// # Schema-aware paths
+///
+/// ```rust
+/// use serde_json::json;
+/// use spatch::diff::{diff, DiffOptions};
+///
+/// let schema = json!({
+///     "properties": {
+///         "tasks": {
+///             "indexKey": "id",
+///             "items": { "properties": { "done": {} } }
+///         }
+///     }
+/// });
+///
+/// let before = json!({"tasks": [{"id": "ship-docs", "done": false}]});
+/// let after = json!({"tasks": [{"id": "ship-docs", "done": true}]});
+///
+/// let patch = diff(&before, &after, DiffOptions::new().with_schema(&schema).granular())
+///     .unwrap();
+/// let patch_json = serde_json::to_value(&patch).unwrap();
+///
+/// assert_eq!(patch_json[0]["path"], "/tasks/[id=ship-docs]/done");
+/// ```
 pub fn diff(
     left: &serde_json::Value,
     right: &serde_json::Value,
-    schema: Option<&serde_json::Value>,
+    options: DiffOptions<'_>,
 ) -> Result<Patch, DiffErrorSummary> {
     let (patch, error_summary) =
-        engine::diff_recursive(left, right, schema, &Spath::default(), &Patch::default());
+        engine::diff_recursive(left, right, options, &Spath::default(), &Patch::default());
 
     if error_summary.is_empty() {
         Ok(patch)
@@ -75,7 +179,7 @@ pub fn diff(
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, assert};
+    use assert2::{assert, check};
     use serde_json::json;
 
     use super::*;
@@ -92,7 +196,9 @@ mod tests {
             "age": 31,
         });
 
-        let patch = diff(&left, &right, None).unwrap();
+        let diff_options = DiffOptions::new();
+
+        let patch = diff(&left, &right, diff_options).unwrap();
         check!(patch.len() == 1);
         assert!(let PatchOp::Replace { path, value } = &patch[0]);
         check!(path.to_string() == "/age");

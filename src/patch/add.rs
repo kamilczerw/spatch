@@ -40,7 +40,7 @@ use crate::{
 ///    elements at or above the specified index are shifted one position
 ///    to the right.  The specified index MUST NOT be greater than the
 ///    number of elements in the array.  If the "-" character is used to
-///    index the end of the array (see [RFC6901]), this has the effect of
+///    index the end of the array (see RFC 6901), this has the effect of
 ///    appending the value to the array.
 ///
 /// Because this operation is designed to add to existing objects and
@@ -104,7 +104,7 @@ pub fn add(doc: &mut Value, path: Spath, value: Value) -> Result<(), PatchError>
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, assert};
+    use assert2::{assert, check};
     use serde_json::{from_str, json};
 
     use crate::resolve::ResolveError;

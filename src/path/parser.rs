@@ -118,7 +118,7 @@ fn unescape_json_pointer(input: &str) -> IResult<&str, char, VerboseError<&str>>
 
 #[cfg(test)]
 mod tests {
-    use assert2::{check, assert};
+    use assert2::{assert, check};
 
     use super::*;
 
