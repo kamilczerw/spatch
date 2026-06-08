@@ -359,7 +359,7 @@ fn diff_array_indexed(
 mod tests {
     use assert2::check;
 
-    use crate::diff::PatchOp;
+    use crate::diff::{DiffGranularity, PatchOp};
     use crate::diff::test_util::SIMPLE_SCHEMA;
     use crate::diff::test_util::json_patch_tests;
 
@@ -480,6 +480,125 @@ mod tests {
         );
 
         let expected_patch = Patch::new(vec![PatchOp::add(path("/bar"), Value::Number(1.into()))]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn compact_granularity_should_replace_parent_object_when_smaller() {
+        let left = serde_json::json!({
+            "long_field_name_a": 1,
+            "long_field_name_b": 2,
+            "long_field_name_c": 3,
+        });
+        let right = serde_json::json!({
+            "long_field_name_a": 10,
+            "long_field_name_b": 20,
+            "long_field_name_c": 30,
+        });
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().with_granularity(DiffGranularity::Compact),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![PatchOp::replace(Spath::default(), right.clone())]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn granular_granularity_should_keep_nested_object_operations() {
+        let left = serde_json::json!({
+            "long_field_name_a": 1,
+            "long_field_name_b": 2,
+            "long_field_name_c": 3,
+        });
+        let right = serde_json::json!({
+            "long_field_name_a": 10,
+            "long_field_name_b": 20,
+            "long_field_name_c": 30,
+        });
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().granular(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![
+            PatchOp::replace(path("/long_field_name_a"), Value::Number(10.into())),
+            PatchOp::replace(path("/long_field_name_b"), Value::Number(20.into())),
+            PatchOp::replace(path("/long_field_name_c"), Value::Number(30.into())),
+        ]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn schema_should_not_leak_to_object_property_without_schema() {
+        let schema = serde_json::json!({
+            "indexKey": "id",
+            "properties": {}
+        });
+        let left = serde_json::json!({
+            "items": [{"name": "old"}]
+        });
+        let right = serde_json::json!({
+            "items": [{"name": "new"}]
+        });
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().with_schema(&schema).granular(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![PatchOp::replace(
+            path("/items/0/name"),
+            serde_json::json!("new"),
+        )]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn keyed_array_schema_should_not_leak_to_items_without_items_schema() {
+        let schema = serde_json::json!({
+            "indexKey": "id"
+        });
+        let left = serde_json::json!([{
+            "id": "a",
+            "nested": [{"name": "old"}]
+        }]);
+        let right = serde_json::json!([{
+            "id": "a",
+            "nested": [{"name": "new"}]
+        }]);
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().with_schema(&schema).granular(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![PatchOp::replace(
+            path("/[id=a]/nested/0/name"),
+            serde_json::json!("new"),
+        )]);
 
         check!(diff_errors.is_empty() == true);
         check!(patch_ops == expected_patch);
