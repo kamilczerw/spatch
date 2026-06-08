@@ -359,9 +359,9 @@ fn diff_array_indexed(
 mod tests {
     use assert2::check;
 
-    use crate::diff::{DiffGranularity, PatchOp};
     use crate::diff::test_util::SIMPLE_SCHEMA;
     use crate::diff::test_util::json_patch_tests;
+    use crate::diff::{DiffGranularity, PatchOp};
 
     use super::*;
 
