@@ -50,6 +50,14 @@ impl TryFrom<&str> for Spath {
     }
 }
 
+impl TryFrom<String> for Spath {
+    type Error = PathError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Spath::try_from(value.as_str())
+    }
+}
+
 impl TryFrom<&Spath> for Spath {
     type Error = PathError;
 
