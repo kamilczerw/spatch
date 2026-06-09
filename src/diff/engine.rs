@@ -237,8 +237,8 @@ fn build_key_map(
     let mut errors = Vec::new();
     for (i, item) in arr.iter().enumerate() {
         let current_path = path_pointer.push(crate::path::Segment::Field(format!("{}", i)));
-        if let Value::Object(obj) = item {
-            match obj.get(index_key) {
+        match item {
+            Value::Object(obj) => match obj.get(index_key) {
                 Some(value) => match index_key_value_to_filter(value) {
                     Some(key) => match map.entry(key) {
                         Entry::Occupied(entry) => {
@@ -259,7 +259,8 @@ fn build_key_map(
                 None => {
                     errors.push(DiffError::missing_index_key(&current_path, index_key));
                 }
-            }
+            },
+            _ => errors.push(DiffError::non_object_array_item(path_pointer, item)),
         }
     }
     (map, errors)
@@ -395,7 +396,7 @@ fn diff_array_indexed(
 
 #[cfg(test)]
 mod tests {
-    use assert2::check;
+    use assert2::{assert, check};
 
     use crate::diff::test_util::SIMPLE_SCHEMA;
     use crate::diff::test_util::json_patch_tests;
@@ -1061,6 +1062,21 @@ mod tests {
 
         check!(diff_errors.left == expected_errors);
         check!(diff_errors.right == expected_errors);
+    }
+
+    #[test]
+    fn diff_with_schema_and_non_object_array_items_should_fail() {
+        let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
+        let options = DiffOptions::new().with_schema(&schema);
+
+        let left = serde_json::json!({"foo": ["left-only"]});
+        let right = serde_json::json!({"foo": ["right-only"]});
+
+        assert!(let Err(e) = crate::diff::diff(&left, &right, options));
+        check!(
+            e.to_string()
+                == "Expected array items at path /foo to be objects for schema-aware diffing, but found string"
+        );
     }
 
     #[test]
