@@ -7,7 +7,7 @@ pub use crate::path::error::PathError;
 
 use parser::parse_path;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Segment {
     /// Represents a field in the object.
     Field(String),
@@ -17,7 +17,7 @@ pub enum Segment {
     Filter(Vec<(String, String)>),
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct Spath {
     pub(crate) segments: Vec<Segment>,
 }
@@ -47,6 +47,14 @@ impl TryFrom<&str> for Spath {
                 message: "unexpected end of input".into(),
             }),
         }
+    }
+}
+
+impl TryFrom<&Spath> for Spath {
+    type Error = PathError;
+
+    fn try_from(value: &Spath) -> Result<Self, Self::Error> {
+        Ok(value.clone())
     }
 }
 

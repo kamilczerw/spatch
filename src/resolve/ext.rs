@@ -1,15 +1,24 @@
-use crate::{path::Spath, resolve::resolve_mut};
+use crate::{
+    path::{PathError, Spath},
+    resolve::{self, resolve_mut},
+};
 
 use super::{ResolveError, resolve_ref};
 
 pub trait SerdeValueExt {
-    fn get_value_at(&self, path: &str) -> Result<&serde_json::Value, ResolveError>;
+    fn get_value_at(
+        &self,
+        path: impl TryInto<Spath, Error = PathError>,
+    ) -> Result<&serde_json::Value, ResolveError>;
     fn apply_at(&mut self, path: &str, value: serde_json::Value) -> Result<(), ResolveError>;
 }
 
 impl SerdeValueExt for serde_json::Value {
-    fn get_value_at(&self, path: &str) -> Result<&serde_json::Value, ResolveError> {
-        let spath = Spath::try_from(path)?;
+    fn get_value_at(
+        &self,
+        path: impl TryInto<Spath, Error = PathError>,
+    ) -> Result<&serde_json::Value, ResolveError> {
+        let spath = path.try_into()?;
 
         resolve_ref(self, &spath)
     }

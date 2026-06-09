@@ -11,7 +11,7 @@ pub fn handle_query_command(args: QueryArgs) -> Result<(), Box<dyn Error>> {
         read_from_stdin()?
     };
 
-    json.get_value_at(&args.path)
+    json.get_value_at(args.path.as_str())
         .map(|value| {
             println!("{}", value);
         })

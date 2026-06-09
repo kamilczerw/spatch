@@ -64,6 +64,7 @@ use std::ops::{Add, Deref};
 
 pub use options::{DiffGranularity, DiffOptions};
 pub use patch_operations::PatchOp;
+pub use schema::SchemaResolver;
 use serde::Serialize;
 
 use crate::{diff::error::DiffErrorSummary, path::Spath};
