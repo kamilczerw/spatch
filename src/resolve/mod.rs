@@ -1,5 +1,6 @@
 mod ext;
 
+pub use crate::diff::SchemaResolver;
 use crate::path::{PathError, Spath};
 pub use ext::SerdeValueExt;
 use std::{ops::Deref, str::FromStr};
