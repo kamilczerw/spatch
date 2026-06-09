@@ -123,9 +123,10 @@ fn patch_op_contains_semantic_path(op: &super::PatchOp) -> bool {
         super::PatchOp::Add { path, .. }
         | super::PatchOp::Remove { path }
         | super::PatchOp::Replace { path, .. }
-        | super::PatchOp::Move { path, .. }
-        | super::PatchOp::Copy { path, .. }
         | super::PatchOp::Test { path, .. } => path_contains_semantic_segment(path),
+        super::PatchOp::Move { from, path } | super::PatchOp::Copy { from, path } => {
+            path_contains_semantic_segment(from) || path_contains_semantic_segment(path)
+        }
     }
 }
 
@@ -580,6 +581,23 @@ mod tests {
 
         check!(diff_errors.is_empty() == true);
         check!(patch_ops == expected_patch);
+    }
+
+    #[test]
+    fn patch_contains_semantic_path_should_check_move_and_copy_from_paths() {
+        let destination_path = path("/tracks/0/levels/0");
+
+        let move_patch = Patch::new(vec![PatchOp::move_op(
+            path("/tracks/[id=free]/levels/[id=1]"),
+            destination_path.clone(),
+        )]);
+        check!(patch_contains_semantic_path(&move_patch));
+
+        let copy_patch = Patch::new(vec![PatchOp::copy(
+            path("/tracks/[id=free]/levels/[id=1]"),
+            destination_path,
+        )]);
+        check!(patch_contains_semantic_path(&copy_patch));
     }
 
     #[test]
