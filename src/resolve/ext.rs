@@ -1,6 +1,6 @@
 use crate::{
     path::{PathError, Spath},
-    resolve::{self, resolve_mut},
+    resolve::resolve_mut,
 };
 
 use super::{ResolveError, resolve_ref};
