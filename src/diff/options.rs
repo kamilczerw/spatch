@@ -9,7 +9,9 @@
 ///
 /// When a schema marks an array with `indexKey`, spatch can address items by
 /// identity instead of by position. That keeps patches stable when arrays are
-/// reordered, prepended to, or trimmed.
+/// reordered, prepended to, or trimmed. The `indexKey` value on each array item
+/// may be a string, number, or boolean. Object, array, and `null` values are
+/// rejected because they cannot be represented safely in a semantic path filter.
 ///
 /// ```rust
 /// use serde_json::json;
@@ -35,6 +37,40 @@
 /// let patch_json = serde_json::to_value(&patch).unwrap();
 ///
 /// assert_eq!(patch_json[0]["path"], "/users/[id=u-1]/name");
+/// ```
+///
+/// Schema traversal follows local JSON Schema `$ref`s while diffing. This lets
+/// identity rules compose across nested arrays whose item schemas live under
+/// `$defs`:
+///
+/// ```rust
+/// use serde_json::json;
+/// use spatch::diff::{diff, DiffOptions};
+///
+/// let schema = json!({
+///     "properties": {
+///         "levels": {
+///             "indexKey": "id",
+///             "items": { "$ref": "#/$defs/level" }
+///         }
+///     },
+///     "$defs": {
+///         "level": {
+///             "properties": {
+///                 "xp": {}
+///             }
+///         }
+///     }
+/// });
+///
+/// let before = json!({"levels": [{"id": 1, "xp": 100}]});
+/// let after = json!({"levels": [{"id": 1, "xp": 150}]});
+///
+/// let patch = diff(&before, &after, DiffOptions::new().with_schema(&schema).granular())
+///     .unwrap();
+/// let patch_json = serde_json::to_value(&patch).unwrap();
+///
+/// assert_eq!(patch_json[0]["path"], "/levels/[id=1]/xp");
 /// ```
 ///
 /// # Granularity
@@ -64,7 +100,13 @@ pub struct DiffOptions<'a> {
     /// spatch looks for the custom `indexKey` property on array schemas. When
     /// present, array elements are diffed and emitted as semantic paths such as
     /// `/items/[id=item-42]` instead of index paths such as `/items/0`.
+    /// Schema-aware diffing follows local JSON Schema references like
+    /// `{ "$ref": "#/$defs/item" }` when walking `properties` and `items`, so
+    /// nested arrays can each declare their own identity rules. Referenced
+    /// schemas must be in the same schema document.
     pub schema: Option<&'a serde_json::Value>,
+
+    pub(crate) root_schema: Option<&'a serde_json::Value>,
 
     /// Controls whether object diffs prefer smaller patches or nested patches.
     pub granularity: DiffGranularity,
@@ -117,8 +159,16 @@ impl<'a> DiffOptions<'a> {
     /// Enables schema-aware diffing.
     ///
     /// The schema is borrowed, so callers can keep schema loading and caching
-    /// outside the diff engine. spatch currently recognizes `indexKey` on array
-    /// schemas to select the string property that identifies array elements.
+    /// outside the diff engine. spatch recognizes `indexKey` on array schemas to
+    /// select the property that identifies array elements. Item identity values
+    /// may be strings, numbers, or booleans, producing filters like
+    /// `[id=item-42]`, `[id=1]`, or `[enabled=true]`. Object, array, and `null`
+    /// identity values are rejected and returned as diff errors.
+    ///
+    /// Local JSON Schema references are followed during schema-aware diffing.
+    /// For example, if `items` is `{ "$ref": "#/$defs/level" }`, spatch resolves
+    /// that reference before looking for nested `properties`, `items`, and
+    /// `indexKey` declarations.
     ///
     /// ```rust
     /// use serde_json::json;
@@ -139,8 +189,66 @@ impl<'a> DiffOptions<'a> {
     ///
     /// assert_eq!(patch_json[0]["path"], "/todos/[id=t-1]/done");
     /// ```
+    ///
+    /// Nested arrays reached through local `$ref`s also keep semantic paths:
+    ///
+    /// ```rust
+    /// use serde_json::json;
+    /// use spatch::diff::{diff, DiffOptions};
+    ///
+    /// let schema = json!({
+    ///     "properties": {
+    ///         "tracks": {
+    ///             "indexKey": "id",
+    ///             "items": { "$ref": "#/$defs/track" }
+    ///         }
+    ///     },
+    ///     "$defs": {
+    ///         "track": {
+    ///             "properties": {
+    ///                 "levels": {
+    ///                     "indexKey": "id",
+    ///                     "items": { "$ref": "#/$defs/level" }
+    ///                 }
+    ///             }
+    ///         },
+    ///         "level": {
+    ///             "properties": {
+    ///                 "rewards": {
+    ///                     "indexKey": "id",
+    ///                     "items": { "$ref": "#/$defs/reward" }
+    ///                 }
+    ///             }
+    ///         },
+    ///         "reward": {
+    ///             "properties": {
+    ///                 "amount": {}
+    ///             }
+    ///         }
+    ///     }
+    /// });
+    ///
+    /// let before = json!({"tracks": [{"id": "free", "levels": [{
+    ///     "id": 1,
+    ///     "rewards": [{"id": "reward-1", "amount": 100}]
+    /// }]}]});
+    /// let after = json!({"tracks": [{"id": "free", "levels": [{
+    ///     "id": 1,
+    ///     "rewards": [{"id": "reward-1", "amount": 250}]
+    /// }]}]});
+    ///
+    /// let patch = diff(&before, &after, DiffOptions::new().with_schema(&schema).granular())
+    ///     .unwrap();
+    /// let patch_json = serde_json::to_value(&patch).unwrap();
+    ///
+    /// assert_eq!(
+    ///     patch_json[0]["path"],
+    ///     "/tracks/[id=free]/levels/[id=1]/rewards/[id=reward-1]/amount"
+    /// );
+    /// ```
     pub fn with_schema(mut self, schema: &'a serde_json::Value) -> Self {
         self.schema = Some(schema);
+        self.root_schema = Some(schema);
         self
     }
 
@@ -150,6 +258,7 @@ impl<'a> DiffOptions<'a> {
     /// back to pure RFC 6902, index-based diffing.
     pub fn without_schema(mut self) -> Self {
         self.schema = None;
+        self.root_schema = None;
         self
     }
 
@@ -173,6 +282,9 @@ impl<'a> DiffOptions<'a> {
     ///
     /// Compact mode is the default. When a parent object replacement serializes
     /// smaller than many child operations, spatch emits the parent `replace`.
+    /// Schema-aware diffs are the exception: if nested operations contain
+    /// semantic path filters like `[id=item-42]`, compact mode keeps those
+    /// operations so semantic identity is not lost.
     pub fn compact(mut self) -> Self {
         self.granularity = DiffGranularity::Compact;
         self
@@ -188,12 +300,29 @@ impl<'a> DiffOptions<'a> {
         self.schema = schema;
         self
     }
+
+    pub(crate) fn resolver(&self) -> crate::diff::schema::SchemaResolver<'a> {
+        crate::diff::schema::SchemaResolver::new(self.root_schema)
+    }
+
+    pub(crate) fn property_schema(&self, key: &str) -> Option<&'a serde_json::Value> {
+        self.resolver().property_schema(self.schema, key)
+    }
+
+    pub(crate) fn items_schema(&self) -> Option<&'a serde_json::Value> {
+        self.resolver().items_schema(self.schema)
+    }
+
+    pub(crate) fn index_key(&self) -> Option<&'a str> {
+        self.resolver().index_key(self.schema)
+    }
 }
 
 impl<'a> Default for DiffOptions<'a> {
     fn default() -> Self {
         Self {
             schema: None,
+            root_schema: None,
             granularity: DiffGranularity::Compact,
         }
     }

@@ -152,6 +152,49 @@ Will produce a JSON Patch with semantic array paths:
 > **MUST** provide a JSON Schema that defines the array with `indexKey: "{identity-property-name}"`.
 > Otherwise, spatch will fall back to index-based addressing.
 
+Schema-aware diffing also follows local JSON Schema `$ref`s while walking
+`properties` and `items`. This means each nested array can define its own
+`indexKey`, even when item schemas are shared through `$defs`:
+
+```json
+{
+  "properties": {
+    "tracks": {
+      "type": "array",
+      "indexKey": "id",
+      "items": { "$ref": "#/$defs/track" }
+    }
+  },
+  "$defs": {
+    "track": {
+      "type": "object",
+      "properties": {
+        "levels": {
+          "type": "array",
+          "indexKey": "id",
+          "items": { "$ref": "#/$defs/level" }
+        }
+      }
+    },
+    "level": {
+      "type": "object",
+      "properties": {
+        "xp": {}
+      }
+    }
+  }
+}
+```
+
+For data like `{ "tracks": [{ "id": "free", "levels": [{ "id": 1, "xp": 100 }] }] }`, numeric identity
+values are emitted directly in semantic paths, for example:
+
+    /tracks/[id=free]/levels/[id=1]/xp
+
+`indexKey` values may be strings, numbers, or booleans, producing filters such as
+`[id=item-2]`, `[id=1]`, or `[enabled=true]`. Object, array, and `null` identity
+values are rejected because they cannot be represented safely in a semantic path.
+
 ### Library
 
 Spatch is designed to be pleasant to use directly from Rust. The `diff` API takes
@@ -219,10 +262,82 @@ The generated patch is stable and easy to understand:
 ]
 ```
 
+#### Nested `$ref` schemas and scalar identity values
+
+Schema-aware diffs resolve local JSON Schema references such as
+`{ "$ref": "#/$defs/track" }` while traversing schemas. This allows semantic
+paths to continue through nested arrays:
+
+```rust
+use serde_json::json;
+use spatch::diff::{diff, DiffOptions};
+
+let schema = json!({
+    "properties": {
+        "tracks": {
+            "indexKey": "id",
+            "items": { "$ref": "#/$defs/track" }
+        }
+    },
+    "$defs": {
+        "track": {
+            "properties": {
+                "levels": {
+                    "indexKey": "id",
+                    "items": { "$ref": "#/$defs/level" }
+                }
+            }
+        },
+        "level": {
+            "properties": {
+                "rewards": {
+                    "indexKey": "id",
+                    "items": { "$ref": "#/$defs/reward" }
+                }
+            }
+        },
+        "reward": { "properties": { "amount": {} } }
+    }
+});
+
+let before = json!({"tracks": [{"id": "free", "levels": [{
+    "id": 1,
+    "xp": 100,
+    "rewards": [{"id": "reward-1", "amount": 100}]
+}]}]});
+
+let after = json!({"tracks": [{"id": "free", "levels": [{
+    "id": 1,
+    "xp": 150,
+    "rewards": [{"id": "reward-1", "amount": 250}]
+}]}]});
+
+let patch = diff(
+    &before,
+    &after,
+    DiffOptions::new().with_schema(&schema).granular(),
+)?;
+```
+
+Example paths from that patch include a numeric level identity and a nested reward
+identity:
+
+```text
+/tracks/[id=free]/levels/[id=1]/xp
+/tracks/[id=free]/levels/[id=1]/rewards/[id=reward-1]/amount
+```
+
+The value of the property named by `indexKey` may be a string, number, or boolean.
+Object, array, and `null` values are rejected and reported as diff errors instead
+of being encoded into semantic path filters.
+
 #### Choose compact or granular object diffs
 
 `DiffOptions::new()` defaults to compact mode. Compact mode keeps patches small
 and may replace a parent object when that is shorter than many nested operations.
+When schema-aware diffing produces semantic paths, compact mode keeps those
+semantic operations instead of collapsing them away, so identity filters such as
+`[id=item-2]` or `[id=1]` remain visible in the patch.
 
 ```rust
 use serde_json::json;
