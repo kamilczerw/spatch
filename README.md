@@ -186,12 +186,10 @@ Schema-aware diffing also follows local JSON Schema `$ref`s while walking
 }
 ```
 
-For data like `{ "levels": [{ "id": 1, "xp": 100 }] }`, numeric identity
+For data like `{ "tracks": [{ "id": "free", "levels": [{ "id": 1, "xp": 100 }] }] }`, numeric identity
 values are emitted directly in semantic paths, for example:
 
-```text
-/levels/[id=1]/xp
-```
+    /tracks/[id=free]/levels/[id=1]/xp
 
 `indexKey` values may be strings, numbers, or booleans, producing filters such as
 `[id=item-2]`, `[id=1]`, or `[enabled=true]`. Object, array, and `null` identity
