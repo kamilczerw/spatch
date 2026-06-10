@@ -149,19 +149,19 @@ Will produce a JSON Patch with semantic array paths:
 > [!IMPORTANT]
 >
 > To let spatch know which property to use as identity key for array elements, you
-> **MUST** provide a JSON Schema that defines the array with `indexKey: "{identity-property-name}"`.
+> **MUST** provide a JSON Schema that defines the array with `x-spatch-indexKey: "{identity-property-name}"`.
 > Otherwise, spatch will fall back to index-based addressing.
 
 Schema-aware diffing also follows local JSON Schema `$ref`s while walking
 `properties` and `items`. This means each nested array can define its own
-`indexKey`, even when item schemas are shared through `$defs`:
+`x-spatch-indexKey`, even when item schemas are shared through `$defs`:
 
 ```json
 {
   "properties": {
     "tracks": {
       "type": "array",
-      "indexKey": "id",
+      "x-spatch-indexKey": "id",
       "items": { "$ref": "#/$defs/track" }
     }
   },
@@ -171,7 +171,7 @@ Schema-aware diffing also follows local JSON Schema `$ref`s while walking
       "properties": {
         "levels": {
           "type": "array",
-          "indexKey": "id",
+          "x-spatch-indexKey": "id",
           "items": { "$ref": "#/$defs/level" }
         }
       }
@@ -191,7 +191,7 @@ values are emitted directly in semantic paths, for example:
 
     /tracks/[id=free]/levels/[id=1]/xp
 
-`indexKey` values may be strings, numbers, or booleans, producing filters such as
+`x-spatch-indexKey` values may be strings, numbers, or booleans, producing filters such as
 `[id=item-2]`, `[id=1]`, or `[enabled=true]`. Object, array, and `null` identity
 values are rejected because they cannot be represented safely in a semantic path.
 
@@ -219,7 +219,7 @@ use spatch::diff::{diff, DiffOptions};
 let schema = json!({
     "properties": {
         "users": {
-            "indexKey": "id",
+            "x-spatch-indexKey": "id",
             "items": {
                 "properties": {
                     "name": {}
@@ -275,7 +275,7 @@ use spatch::diff::{diff, DiffOptions};
 let schema = json!({
     "properties": {
         "tracks": {
-            "indexKey": "id",
+            "x-spatch-indexKey": "id",
             "items": { "$ref": "#/$defs/track" }
         }
     },
@@ -283,7 +283,7 @@ let schema = json!({
         "track": {
             "properties": {
                 "levels": {
-                    "indexKey": "id",
+                    "x-spatch-indexKey": "id",
                     "items": { "$ref": "#/$defs/level" }
                 }
             }
@@ -291,7 +291,7 @@ let schema = json!({
         "level": {
             "properties": {
                 "rewards": {
-                    "indexKey": "id",
+                    "x-spatch-indexKey": "id",
                     "items": { "$ref": "#/$defs/reward" }
                 }
             }
@@ -327,7 +327,7 @@ identity:
 /tracks/[id=free]/levels/[id=1]/rewards/[id=reward-1]/amount
 ```
 
-The value of the property named by `indexKey` may be a string, number, or boolean.
+The value of the property named by `x-spatch-indexKey` may be a string, number, or boolean.
 Object, array, and `null` values are rejected and reported as diff errors instead
 of being encoded into semantic path filters.
 

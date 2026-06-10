@@ -5,7 +5,7 @@ use crate::path::Spath;
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
 #[allow(clippy::enum_variant_names)]
 pub enum DiffError {
-    /// An array schema specified an `indexKey`, which requires object items, but
+    /// An array schema specified an `x-spatch-indexKey`, which requires object items, but
     /// an array item was not a JSON object.
     #[error(
         "Expected array items at path {path} to be objects for schema-aware diffing, but found {found}"
@@ -13,11 +13,11 @@ pub enum DiffError {
     NonObjectArrayItem { path: Spath, found: String },
 
     /// An array item did not contain the property named by the array schema's
-    /// `indexKey`.
+    /// `x-spatch-indexKey`.
     #[error("Item {path} is missing index key '{index_key}'")]
     MissingIndexKey { path: Spath, index_key: String },
 
-    /// An array item's `indexKey` value cannot be represented as a semantic path
+    /// An array item's `x-spatch-indexKey` value cannot be represented as a semantic path
     /// filter.
     ///
     /// Despite the historical variant name, strings, numbers, and booleans are
@@ -29,7 +29,7 @@ pub enum DiffError {
         index_key: serde_json::Value,
     },
 
-    /// Two array items had the same representable `indexKey` value.
+    /// Two array items had the same representable `x-spatch-indexKey` value.
     #[error("Item {path} has duplicate index key '{index_key}' with value '{value}'")]
     DuplicateIndexKey {
         path: Spath,

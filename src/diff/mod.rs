@@ -23,7 +23,7 @@
 //! let schema = json!({
 //!     "properties": {
 //!         "users": {
-//!             "indexKey": "id",
+//!             "x-spatch-indexKey": "id",
 //!             "items": {
 //!                 "properties": {
 //!                     "name": {}
@@ -125,7 +125,7 @@ impl Iterator for Patch {
 ///
 /// By default, spatch emits ordinary RFC 6902-style, index-based paths. Provide
 /// a schema through [`DiffOptions::with_schema`] to generate semantic array
-/// paths based on `indexKey`, and use [`DiffOptions::granular`] when you prefer
+/// paths based on `x-spatch-indexKey`, and use [`DiffOptions::granular`] when you prefer
 /// nested, review-friendly object changes. Compact mode may collapse plain
 /// object changes to parent replacements, but it preserves schema-aware semantic
 /// paths so identity filters like `[id=item-42]` are not lost.
@@ -160,7 +160,7 @@ impl Iterator for Patch {
 /// let schema = json!({
 ///     "properties": {
 ///         "tasks": {
-///             "indexKey": "id",
+///             "x-spatch-indexKey": "id",
 ///             "items": { "properties": { "done": {} } }
 ///         }
 ///     }
@@ -185,7 +185,7 @@ impl Iterator for Patch {
 /// let schema = json!({
 ///     "properties": {
 ///         "levels": {
-///             "indexKey": "id",
+///             "x-spatch-indexKey": "id",
 ///             "items": { "$ref": "#/$defs/level" }
 ///         }
 ///     },

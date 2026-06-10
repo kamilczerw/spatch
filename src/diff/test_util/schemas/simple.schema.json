@@ -3,7 +3,7 @@
   "properties": {
     "foo": {
       "type": "array",
-      "indexKey": "id",
+      "x-spatch-indexKey": "id",
       "items": {
         "type": "object",
         "properties": {

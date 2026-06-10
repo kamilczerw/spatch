@@ -15,7 +15,7 @@ use super::Patch;
 
 /// Name of the property in the JSON Schema that indicates the index key for arrays.
 /// It's used to identify unique items in an array for diffing purposes.
-pub(super) const HASH_KEY_PROP_NAME: &str = "indexKey";
+pub(super) const HASH_KEY_PROP_NAME: &str = "x-spatch-indexKey";
 
 pub(super) fn diff_recursive(
     left: &serde_json::Value,
@@ -606,14 +606,14 @@ mod tests {
             "properties": {
                 "tracks": {
                     "type": "array",
-                    "indexKey": "id",
+                    "x-spatch-indexKey": "id",
                     "items": {
                         "type": "object",
                         "properties": {
                             "id": { "type": "string" },
                             "levels": {
                                 "type": "array",
-                                "indexKey": "id",
+                                "x-spatch-indexKey": "id",
                                 "items": {
                                     "type": "object",
                                     "properties": {
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn schema_should_not_leak_to_object_property_without_schema() {
         let schema = serde_json::json!({
-            "indexKey": "id",
+            "x-spatch-indexKey": "id",
             "properties": {}
         });
         let left = serde_json::json!({
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn keyed_array_schema_should_not_leak_to_items_without_items_schema() {
         let schema = serde_json::json!({
-            "indexKey": "id"
+            "x-spatch-indexKey": "id"
         });
         let left = serde_json::json!([{
             "id": "a",
@@ -742,7 +742,7 @@ mod tests {
             "properties": {
                 "tracks": {
                     "type": "array",
-                    "indexKey": "id",
+                    "x-spatch-indexKey": "id",
                     "items": { "$ref": "#/$defs/track" }
                 }
             },
@@ -753,7 +753,7 @@ mod tests {
                         "id": { "type": "string" },
                         "levels": {
                             "type": "array",
-                            "indexKey": "id",
+                            "x-spatch-indexKey": "id",
                             "items": { "$ref": "#/$defs/level" }
                         }
                     }
@@ -803,7 +803,7 @@ mod tests {
             "properties": {
                 "tracks": {
                     "type": "array",
-                    "indexKey": "id",
+                    "x-spatch-indexKey": "id",
                     "items": { "$ref": "#/$defs/track" }
                 }
             },
@@ -814,7 +814,7 @@ mod tests {
                         "id": { "type": "string" },
                         "levels": {
                             "type": "array",
-                            "indexKey": "id",
+                            "x-spatch-indexKey": "id",
                             "items": { "$ref": "#/$defs/level" }
                         }
                     }
@@ -825,7 +825,7 @@ mod tests {
                         "id": { "type": "string" },
                         "rewards": {
                             "type": "array",
-                            "indexKey": "id",
+                            "x-spatch-indexKey": "id",
                             "items": { "$ref": "#/$defs/reward" }
                         }
                     }
@@ -881,7 +881,7 @@ mod tests {
             "properties": {
                 "levels": {
                     "type": "array",
-                    "indexKey": "id",
+                    "x-spatch-indexKey": "id",
                     "items": {
                         "type": "object",
                         "properties": {

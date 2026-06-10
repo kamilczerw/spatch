@@ -7,9 +7,9 @@
 ///
 /// # Schema-aware array paths
 ///
-/// When a schema marks an array with `indexKey`, spatch can address items by
+/// When a schema marks an array with `x-spatch-indexKey`, spatch can address items by
 /// identity instead of by position. That keeps patches stable when arrays are
-/// reordered, prepended to, or trimmed. The `indexKey` value on each array item
+/// reordered, prepended to, or trimmed. The `x-spatch-indexKey` value on each array item
 /// may be a string, number, or boolean. Object, array, and `null` values are
 /// rejected because they cannot be represented safely in a semantic path filter.
 ///
@@ -20,7 +20,7 @@
 /// let schema = json!({
 ///     "properties": {
 ///         "users": {
-///             "indexKey": "id",
+///             "x-spatch-indexKey": "id",
 ///             "items": {
 ///                 "properties": {
 ///                     "name": {}
@@ -50,7 +50,7 @@
 /// let schema = json!({
 ///     "properties": {
 ///         "levels": {
-///             "indexKey": "id",
+///             "x-spatch-indexKey": "id",
 ///             "items": { "$ref": "#/$defs/level" }
 ///         }
 ///     },
@@ -97,7 +97,7 @@
 pub struct DiffOptions<'a> {
     /// Optional schema used to discover semantic array identity rules.
     ///
-    /// spatch looks for the custom `indexKey` property on array schemas. When
+    /// spatch looks for the custom `x-spatch-indexKey` property on array schemas. When
     /// present, array elements are diffed and emitted as semantic paths such as
     /// `/items/[id=item-42]` instead of index paths such as `/items/0`.
     /// Schema-aware diffing follows local JSON Schema references like
@@ -159,7 +159,7 @@ impl<'a> DiffOptions<'a> {
     /// Enables schema-aware diffing.
     ///
     /// The schema is borrowed, so callers can keep schema loading and caching
-    /// outside the diff engine. spatch recognizes `indexKey` on array schemas to
+    /// outside the diff engine. spatch recognizes `x-spatch-indexKey` on array schemas to
     /// select the property that identifies array elements. Item identity values
     /// may be strings, numbers, or booleans, producing filters like
     /// `[id=item-42]`, `[id=1]`, or `[enabled=true]`. Object, array, and `null`
@@ -168,7 +168,7 @@ impl<'a> DiffOptions<'a> {
     /// Local JSON Schema references are followed during schema-aware diffing.
     /// For example, if `items` is `{ "$ref": "#/$defs/level" }`, spatch resolves
     /// that reference before looking for nested `properties`, `items`, and
-    /// `indexKey` declarations.
+    /// `x-spatch-indexKey` declarations.
     ///
     /// ```rust
     /// use serde_json::json;
@@ -176,7 +176,7 @@ impl<'a> DiffOptions<'a> {
     ///
     /// let schema = json!({
     ///     "properties": {
-    ///         "todos": { "indexKey": "id" }
+    ///         "todos": { "x-spatch-indexKey": "id" }
     ///     }
     /// });
     ///
@@ -199,7 +199,7 @@ impl<'a> DiffOptions<'a> {
     /// let schema = json!({
     ///     "properties": {
     ///         "tracks": {
-    ///             "indexKey": "id",
+    ///             "x-spatch-indexKey": "id",
     ///             "items": { "$ref": "#/$defs/track" }
     ///         }
     ///     },
@@ -207,7 +207,7 @@ impl<'a> DiffOptions<'a> {
     ///         "track": {
     ///             "properties": {
     ///                 "levels": {
-    ///                     "indexKey": "id",
+    ///                     "x-spatch-indexKey": "id",
     ///                     "items": { "$ref": "#/$defs/level" }
     ///                 }
     ///             }
@@ -215,7 +215,7 @@ impl<'a> DiffOptions<'a> {
     ///         "level": {
     ///             "properties": {
     ///                 "rewards": {
-    ///                     "indexKey": "id",
+    ///                     "x-spatch-indexKey": "id",
     ///                     "items": { "$ref": "#/$defs/reward" }
     ///                 }
     ///             }
