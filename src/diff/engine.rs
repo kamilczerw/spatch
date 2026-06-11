@@ -192,7 +192,7 @@ fn diff_array_keyed(
     let added = added_keys
         .into_iter()
         .map(|key| {
-            let child_path = path_pointer.push_filter(index_key, key);
+            let child_path = path_pointer.push(crate::path::Segment::Field("-".to_string()));
             let val = &map_right[key];
 
             Patch::new_with_op(super::PatchOp::add(child_path.clone(), val.clone()))
@@ -970,7 +970,7 @@ mod tests {
             diff_recursive(&left, &right, options, &Spath::default(), &Patch::default());
 
         let expected_patch = Patch::new(vec![PatchOp::add(
-            path("/foo/[id=bla]"),
+            path("/foo/-"),
             serde_json::json!({"id": "bla", "count": 3}),
         )]);
         check!(diff_errors.is_empty() == true);
