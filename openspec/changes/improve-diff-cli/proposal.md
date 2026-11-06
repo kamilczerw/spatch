@@ -36,4 +36,3 @@ Two CLI gaps make `spatch diff` hard to use:
 - `src/cli/mod.rs` (new argument), `src/cli/diff.rs` (option wiring, error printing), `src/main.rs`
   (error reporting), `src/diff/error.rs` (`Display`).
 - Error text on stderr changes; stdout and exit code do not. Default diff output is unchanged.
-- `lenient-diff-fallback` builds on this change (adds `--strict` to the same arguments).
