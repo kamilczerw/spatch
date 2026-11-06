@@ -11,10 +11,10 @@ pub fn handle_diff_command(args: DiffArgs) -> Result<(), Box<dyn std::error::Err
         None
     };
 
-    let diff_options = if let Some(schema) = schema {
-        DiffOptions::new().with_schema(schema)
-    } else {
-        DiffOptions::new()
+    let diff_options = DiffOptions::new().with_granularity(args.granularity.into());
+    let diff_options = match schema {
+        Some(schema) => diff_options.with_schema(schema),
+        None => diff_options,
     };
 
     let result = diff(&file1, &file2, diff_options)?;

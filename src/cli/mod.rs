@@ -3,7 +3,8 @@ pub mod query;
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use spatch::diff::DiffGranularity;
 
 #[derive(Debug, Parser)]
 #[command(name = "spatch", version, about)]
@@ -45,4 +46,25 @@ pub struct DiffArgs {
     /// Path to the optional JSON Schema file for validation and generating semantic paths
     #[arg(short, long)]
     pub schema: Option<PathBuf>,
+
+    /// How aggressively to collapse changes into larger operations.
+    /// `compact` may replace a whole object when that is smaller; `granular` keeps nested operations.
+    #[arg(long, value_enum, default_value_t = Granularity::Compact)]
+    pub granularity: Granularity,
+}
+
+/// CLI spelling of [`spatch::diff::DiffGranularity`].
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum Granularity {
+    Compact,
+    Granular,
+}
+
+impl From<Granularity> for DiffGranularity {
+    fn from(value: Granularity) -> Self {
+        match value {
+            Granularity::Compact => DiffGranularity::Compact,
+            Granularity::Granular => DiffGranularity::Granular,
+        }
+    }
 }

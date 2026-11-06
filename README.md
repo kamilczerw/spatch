@@ -146,6 +146,30 @@ Will produce a JSON Patch with semantic array paths:
 ]
 ```
 
+By default the diff is `compact`: when it serialises smaller, an object change collapses into a
+whole-object `replace`. Use `--granularity granular` to keep per-field operations instead:
+
+```bash
+spatch diff --granularity granular examples/simple.json examples/simple-new.json
+```
+
+```json
+[
+  { "op": "replace", "path": "/list/1/name", "value": "Item Two" },
+  { "op": "replace", "path": "/list/1/value", "value": 200 }
+]
+```
+
+(Abridged: the real output also contains the `add` operation for the new list item.)
+
+If the diff fails, every error is printed to stderr, one per line, prefixed with `left:` or
+`right:` for the input it was found in, and the exit code is `1`:
+
+```
+left: Item /notifications/0 is missing index key 'id'
+right: Item /notifications/0 is missing index key 'id'
+```
+
 > [!IMPORTANT]
 >
 > To let spatch know which property to use as identity key for array elements, you
