@@ -96,10 +96,16 @@ impl Spath {
     }
 
     pub fn push_filter(&self, key: &str, value: &str) -> Self {
-        let mut segments = self.segments.clone();
-        segments.push(Segment::Filter(vec![(key.to_owned(), value.to_owned())]));
+        self.push_filters([(key, value)])
+    }
 
-        Spath { segments }
+    /// Appends one filter segment carrying every `(key, value)` pair, in the order given.
+    pub fn push_filters<'a>(&self, pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Self {
+        let filters = pairs
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        self.push(Segment::Filter(filters))
     }
 
     /// Returns a parent path, or None if there is no parent.

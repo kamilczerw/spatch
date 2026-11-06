@@ -35,6 +35,22 @@ impl<'a> SchemaResolver<'a> {
         schema.get(super::engine::HASH_KEY_PROP_NAME)?.as_str()
     }
 
+    /// Field names declared by `x-spatch-indexKey`: a string names one field, a non-empty array
+    /// of strings names several that together identify an item.
+    ///
+    /// Returns `None` when the schema declares no index key and `Some(Err(()))` when the
+    /// declaration is invalid (empty array or non-string entry).
+    pub(super) fn index_keys(&self, schema: Option<&'a Value>) -> Option<Result<Vec<&'a str>, ()>> {
+        let schema = self.resolve(schema?)?;
+        match schema.get(super::engine::HASH_KEY_PROP_NAME)? {
+            Value::String(key) => Some(Ok(vec![key])),
+            Value::Array(keys) if !keys.is_empty() => {
+                Some(keys.iter().map(|k| k.as_str().ok_or(())).collect())
+            }
+            _ => Some(Err(())),
+        }
+    }
+
     fn resolve_inner(
         &self,
         schema: &'a Value,

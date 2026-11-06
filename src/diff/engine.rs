@@ -143,29 +143,43 @@ fn diff_array(
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     // TODO: emit warning if the schema is missing an index key when the schema is provided
-    let index_key = options.index_key().map(str::to_owned);
-
-    match index_key {
+    match options.index_keys() {
         // If the schema specifies an index key, use keyed diffing
-        Some(ref key) if options.schema.is_some() => {
-            diff_array_keyed(left, right, key, options, path_pointer, patch_ops)
+        Some(Ok(keys)) => diff_array_keyed(left, right, &keys, options, path_pointer, patch_ops),
+        // A malformed declaration is a schema error; report it for both inputs.
+        Some(Err(())) => {
+            let error = DiffError::invalid_index_key_declaration(path_pointer);
+            (
+                Patch::default(),
+                DiffErrorSummary::new(vec![error.clone()], vec![error]),
+            )
         }
         // Otherwise, use index based diffing
-        _ => diff_array_indexed(left, right, options, path_pointer, patch_ops),
+        None => diff_array_indexed(left, right, options, path_pointer, patch_ops),
     }
+}
+
+/// Pairs each index key field with its value in a composite identity, for use in a filter segment.
+fn filter_pairs<'a>(
+    keys: &'a [&str],
+    identity: &'a [String],
+) -> impl Iterator<Item = (&'a str, &'a str)> {
+    keys.iter()
+        .copied()
+        .zip(identity.iter().map(String::as_str))
 }
 
 fn diff_array_keyed(
     left: &[Value],
     right: &[Value],
-    index_key: &str,
+    index_keys: &[&str],
     options: DiffOptions,
     path_pointer: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
-    // Build maps: key -> element
-    let (map_left, errors_left) = build_key_map(left, index_key, path_pointer);
-    let (map_right, errors_right) = build_key_map(right, index_key, path_pointer);
+    // Build maps: composite identity (one value per index key field) -> element
+    let (map_left, errors_left) = build_key_map(left, index_keys, path_pointer);
+    let (map_right, errors_right) = build_key_map(right, index_keys, path_pointer);
 
     let keys_a: HashSet<_> = map_left.keys().cloned().collect();
     let keys_b: HashSet<_> = map_right.keys().cloned().collect();
@@ -183,7 +197,7 @@ fn diff_array_keyed(
     let removed = removed_keys
         .into_iter()
         .map(|key| {
-            let child_path = path_pointer.push_filter(index_key, key);
+            let child_path = path_pointer.push_filters(filter_pairs(index_keys, key));
             Patch::new_with_op(super::PatchOp::remove(child_path.clone()))
         })
         .fold(Patch::default(), |acc, p| acc + p);
@@ -206,7 +220,7 @@ fn diff_array_keyed(
     let modified = modified_keys
         .into_iter()
         .map(|key| {
-            let child_path = path_pointer.push_filter(index_key, key);
+            let child_path = path_pointer.push_filters(filter_pairs(index_keys, key));
             let value_left = &map_left[key];
             let value_right = &map_right[key];
 
@@ -229,42 +243,65 @@ fn diff_array_keyed(
     )
 }
 
+/// Identity of an array item: the filter value of each index key field, in schema order.
+type Identity = Vec<String>;
+
 fn build_key_map(
     arr: &[Value],
-    index_key: &str,
+    index_keys: &[&str],
     path_pointer: &Spath,
-) -> (HashMap<String, Value>, Vec<DiffError>) {
+) -> (HashMap<Identity, Value>, Vec<DiffError>) {
     let mut map = HashMap::new();
     let mut errors = Vec::new();
     for (i, item) in arr.iter().enumerate() {
         let current_path = path_pointer.push(crate::path::Segment::Field(format!("{}", i)));
-        match item {
-            Value::Object(obj) => match obj.get(index_key) {
-                Some(value) => match index_key_value_to_filter(value) {
-                    Some(key) => match map.entry(key) {
-                        Entry::Occupied(entry) => {
-                            errors.push(DiffError::duplicate_index_key(
-                                &current_path,
-                                index_key,
-                                entry.key(),
-                            ));
-                        }
-                        Entry::Vacant(entry) => {
-                            entry.insert(item.clone());
-                        }
-                    },
-                    None => {
-                        errors.push(DiffError::non_string_index_key(&current_path, value));
-                    }
-                },
-                None => {
-                    errors.push(DiffError::missing_index_key(&current_path, index_key));
-                }
-            },
-            _ => errors.push(DiffError::non_object_array_item(path_pointer, item)),
+        let Value::Object(obj) = item else {
+            errors.push(DiffError::non_object_array_item(path_pointer, item));
+            continue;
+        };
+        let (identity, item_errors) = item_identity(obj, index_keys, &current_path);
+        errors.extend(item_errors);
+        // Items with an unusable key are skipped; their errors are already recorded.
+        let Some(identity) = identity else { continue };
+        match map.entry(identity) {
+            Entry::Occupied(entry) => errors.push(DiffError::duplicate_index_key(
+                &current_path,
+                &index_keys.join(","),
+                &entry.key().join(","),
+            )),
+            Entry::Vacant(entry) => {
+                entry.insert(item.clone());
+            }
         }
     }
     (map, errors)
+}
+
+/// Reads the identity of `obj` from its index key fields.
+///
+/// Returns the identity only when every field is present and representable; otherwise
+/// returns one error per offending field. Errors name the field only for composite keys.
+fn item_identity(
+    obj: &serde_json::Map<String, Value>,
+    index_keys: &[&str],
+    item_path: &Spath,
+) -> (Option<Identity>, Vec<DiffError>) {
+    let composite = index_keys.len() > 1;
+    let mut identity = Vec::with_capacity(index_keys.len());
+    let mut errors = Vec::new();
+    for key in index_keys {
+        match obj.get(*key) {
+            None => errors.push(DiffError::missing_index_key(item_path, key)),
+            Some(value) => match index_key_value_to_filter(value) {
+                Some(filter) => identity.push(filter),
+                None if composite => errors.push(DiffError::non_string_index_key_in_field(
+                    item_path, key, value,
+                )),
+                None => errors.push(DiffError::non_string_index_key(item_path, value)),
+            },
+        }
+    }
+    (errors.is_empty().then_some(identity), errors)
 }
 
 fn index_key_value_to_filter(value: &Value) -> Option<String> {
@@ -1472,5 +1509,196 @@ mod tests {
         check!(diff_errors.is_empty() == true);
         check!(patch_ops.len() == 2);
         check!(patch_ops == expected_patch);
+    }
+    /// Schema with `items` keyed by the composite `["region", "code"]`.
+    fn composite_schema() -> serde_json::Value {
+        serde_json::json!({
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "x-spatch-indexKey": ["region", "code"],
+                    "items": { "type": "object" }
+                }
+            }
+        })
+    }
+
+    fn diff_composite(
+        left: &serde_json::Value,
+        right: &serde_json::Value,
+    ) -> (Patch, DiffErrorSummary) {
+        let schema = composite_schema();
+        diff_recursive(
+            left,
+            right,
+            DiffOptions::new().with_schema(&schema).granular(),
+            &Spath::default(),
+            &Patch::default(),
+        )
+    }
+
+    #[test]
+    fn composite_index_key_should_produce_multi_pair_filter_paths() {
+        let left = serde_json::json!({"items": [{"region": "eu", "code": "a1", "qty": 1}]});
+        let right = serde_json::json!({"items": [{"region": "eu", "code": "a1", "qty": 2}]});
+
+        let (patch, errors) = diff_composite(&left, &right);
+
+        check!(errors.is_empty());
+        check!(
+            patch
+                == Patch::new(vec![PatchOp::replace(
+                    path("/items/[region=eu,code=a1]/qty"),
+                    serde_json::json!(2)
+                )])
+        );
+    }
+
+    #[test]
+    fn composite_index_key_should_not_match_items_sharing_only_some_fields() {
+        let left = serde_json::json!({"items": [{"region": "eu", "code": "a1"}]});
+        let right = serde_json::json!({"items": [{"region": "eu", "code": "b2"}]});
+
+        let (patch, errors) = diff_composite(&left, &right);
+
+        check!(errors.is_empty());
+        check!(
+            patch
+                == Patch::new(vec![
+                    PatchOp::remove(path("/items/[region=eu,code=a1]")),
+                    PatchOp::add(
+                        path("/items/-"),
+                        serde_json::json!({"region": "eu", "code": "b2"})
+                    ),
+                ])
+        );
+    }
+
+    #[test]
+    fn composite_index_key_should_ignore_item_order() {
+        let left = serde_json::json!({"items": [
+            {"region": "eu", "code": "a1"}, {"region": "us", "code": "a1"}
+        ]});
+        let right = serde_json::json!({"items": [
+            {"region": "us", "code": "a1"}, {"region": "eu", "code": "a1"}
+        ]});
+
+        let (patch, errors) = diff_composite(&left, &right);
+
+        check!(errors.is_empty());
+        check!(patch.is_empty());
+    }
+
+    #[test]
+    fn single_string_index_key_should_still_produce_single_pair_paths() {
+        let schema = serde_json::json!({"properties": {"items": {
+            "type": "array", "x-spatch-indexKey": "id", "items": {"type": "object"}
+        }}});
+        let left = serde_json::json!({"items": [{"id": "a", "qty": 1}]});
+        let right = serde_json::json!({"items": [{"id": "a", "qty": 2}]});
+
+        let (patch, errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new().with_schema(&schema).granular(),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        check!(errors.is_empty());
+        check!(
+            patch
+                == Patch::new(vec![PatchOp::replace(
+                    path("/items/[id=a]/qty"),
+                    serde_json::json!(2)
+                )])
+        );
+    }
+
+    #[test]
+    fn composite_index_key_should_name_the_missing_field() {
+        let left = serde_json::json!({"items": [{"region": "eu"}]});
+        let right = serde_json::json!({"items": []});
+
+        let (_patch, errors) = diff_composite(&left, &right);
+
+        check!(errors.left == vec![DiffError::missing_index_key(&path("/items/0"), "code")]);
+        check!(errors.right.is_empty());
+    }
+
+    #[test]
+    fn composite_index_key_should_name_the_field_with_an_unrepresentable_value() {
+        let left = serde_json::json!({"items": [{"region": "eu", "code": null}]});
+        let right = serde_json::json!({"items": []});
+
+        let (_patch, errors) = diff_composite(&left, &right);
+
+        check!(
+            errors.left
+                == vec![DiffError::non_string_index_key_in_field(
+                    &path("/items/0"),
+                    "code",
+                    &serde_json::json!(null)
+                )]
+        );
+        check!(
+            errors.to_string()
+                == "left: Item /items/0 has non-string index key in field 'code': null"
+        );
+    }
+
+    #[test]
+    fn composite_index_key_should_report_duplicate_combinations() {
+        let left = serde_json::json!({"items": [
+            {"region": "eu", "code": "a1"}, {"region": "eu", "code": "a1"}
+        ]});
+        let right = serde_json::json!({"items": []});
+
+        let (_patch, errors) = diff_composite(&left, &right);
+
+        check!(
+            errors.left
+                == vec![DiffError::duplicate_index_key(
+                    &path("/items/1"),
+                    "region,code",
+                    "eu,a1"
+                )]
+        );
+    }
+
+    #[test]
+    fn invalid_index_key_declarations_should_be_rejected() {
+        for declaration in [serde_json::json!([]), serde_json::json!(["id", 1])] {
+            let schema = serde_json::json!({"properties": {"items": {
+                "type": "array", "x-spatch-indexKey": declaration, "items": {"type": "object"}
+            }}});
+            let doc = serde_json::json!({"items": [{"id": "a"}]});
+
+            assert!(let Err(e) = crate::diff::diff(&doc, &doc, DiffOptions::new().with_schema(&schema)));
+            check!(
+                e.to_string()
+                    == "left: Array at /items has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings\n\
+                        right: Array at /items has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings"
+            );
+        }
+    }
+
+    #[test]
+    fn composite_paths_should_round_trip_through_the_parser_and_apply() {
+        let left = serde_json::json!({"items": [
+            {"region": "a=b", "code": "x y", "qty": 1},
+            {"region": "eu", "code": "a1", "qty": 1},
+        ]});
+        let right = serde_json::json!({"items": [
+            {"region": "a=b", "code": "x y", "qty": 2},
+            {"region": "eu", "code": "a1", "qty": 1},
+        ]});
+
+        let (patch, errors) = diff_composite(&left, &right);
+        check!(errors.is_empty());
+
+        let reparsed: Vec<PatchOp> =
+            serde_json::from_str(&serde_json::to_string(&patch).unwrap()).unwrap();
+        check!(crate::patch::apply(&left, &reparsed).unwrap() == right);
     }
 }
