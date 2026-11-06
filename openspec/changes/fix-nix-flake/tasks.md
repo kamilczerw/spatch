@@ -8,7 +8,8 @@
 
 - [ ] 2.1 Delete the `cargoSha256 = lib.fakeSha256;` line
 - [ ] 2.2 Delete the `++ lib.optionals;` line from the dev shell packages
-- [ ] 2.3 Replace the hardcoded `version` with `(lib.importTOML ./Cargo.toml).package.version`
+- [ ] 2.3 Use `pkgs.rustc` and `pkgs.cargo` in the dev shell instead of `pkgs.rustPlatform.rustc`/`.cargo`
+- [ ] 2.4 Replace the hardcoded `version` with `(lib.importTOML ./Cargo.toml).package.version`
 
 ## 3. Verify
 

@@ -10,7 +10,8 @@ The flake SHALL evaluate without errors and SHALL build the default package usin
 
 #### Scenario: Dev shell evaluates
 - **WHEN** a user runs `nix develop` on the flake
-- **THEN** evaluation succeeds and the shell provides `rustc` and `cargo`
+- **THEN** evaluation succeeds and the shell provides `rustc` and `cargo` from the top-level `pkgs.rustc` and `pkgs.cargo`
+  attributes
 
 ### Requirement: Package version follows Cargo.toml
 The flake's package version SHALL be read from the `version` field of `Cargo.toml`, so that the

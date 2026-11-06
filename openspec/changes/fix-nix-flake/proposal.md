@@ -12,6 +12,8 @@ arguments, which errors at eval time). The package version is hardcoded to `0.1.
 
 - Remove the `cargoSha256` line from the package definition.
 - Remove the `++ lib.optionals;` line from the dev shell package list.
+- Use `pkgs.rustc` and `pkgs.cargo` in the dev shell (`pkgs.rustPlatform.rustc` does not exist and
+  fails evaluation with `attribute 'rustc' missing`).
 - Derive the package `version` from `Cargo.toml` via `(lib.importTOML ./Cargo.toml).package.version`
   instead of hardcoding it.
 
