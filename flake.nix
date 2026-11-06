@@ -28,20 +28,17 @@
         {
           packages.default = pkgs.rustPlatform.buildRustPackage rec {
             pname = "spatch";
-            version = "0.1.0";
+            version = (lib.importTOML ./Cargo.toml).package.version;
             src = self;
 
             cargoLock.lockFile = ./Cargo.lock;
-
-            cargoSha256 = lib.fakeSha256;
           };
 
           devShells.default = pkgs.mkShell {
             packages = [
-              pkgs.rustPlatform.rustc
-              pkgs.rustPlatform.cargo
-            ]
-            ++ lib.optionals;
+              pkgs.rustc
+              pkgs.cargo
+            ];
           };
         }
       );
