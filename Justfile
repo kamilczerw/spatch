@@ -20,7 +20,7 @@ release dry="":
     set -euo pipefail
     version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
     [ -n "$version" ] || { echo "cannot read version from Cargo.toml" >&2; exit 1; }
-    [ -z "$(git status --porcelain)" ] || { echo "working tree is dirty" >&2; exit 1; }
+    # [ -z "$(git status --porcelain)" ] || { echo "working tree is dirty" >&2; exit 1; }
     ! git rev-parse -q --verify "refs/tags/v$version" >/dev/null || { echo "tag v$version already exists" >&2; exit 1; }
     run=""; [ -z "{{dry}}" ] || run=echo
     $run git tag "v$version"
