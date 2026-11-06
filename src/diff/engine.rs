@@ -1642,8 +1642,8 @@ mod tests {
                 )]
         );
         check!(
-            errors.to_string()
-                == "left: Item /items/0 has non-string index key in field 'code': null"
+            errors.left[0].to_string()
+                == "Item /items/0 has non-string index key in field 'code': null"
         );
     }
 
@@ -1675,11 +1675,9 @@ mod tests {
             let doc = serde_json::json!({"items": [{"id": "a"}]});
 
             assert!(let Err(e) = crate::diff::diff(&doc, &doc, DiffOptions::new().with_schema(&schema)));
-            check!(
-                e.to_string()
-                    == "left: Array at /items has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings\n\
-                        right: Array at /items has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings"
-            );
+            let expected = vec![DiffError::invalid_index_key_declaration(&path("/items"))];
+            check!(e.left == expected);
+            check!(e.right == expected);
         }
     }
 
