@@ -23,11 +23,22 @@ pub enum DiffError {
     /// Despite the historical variant name, strings, numbers, and booleans are
     /// accepted as semantic identity values. This error is returned for object,
     /// array, and `null` values.
-    #[error("Item {path} has non-string index key: {index_key}")]
+    ///
+    /// `field` names the offending field of a composite index key; it is `None` for a
+    /// single-field key.
+    #[error("Item {path} has non-string index key{}: {index_key}", field_suffix(.field))]
     NonStringIndexKey {
         path: Spath,
+        field: Option<String>,
         index_key: serde_json::Value,
     },
+
+    /// An array schema's `x-spatch-indexKey` is neither a string nor a non-empty array of
+    /// strings.
+    #[error(
+        "Array at {path} has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings"
+    )]
+    InvalidIndexKeyDeclaration { path: Spath },
 
     /// Two array items had the same representable `x-spatch-indexKey` value.
     #[error("Item {path} has duplicate index key '{index_key}' with value '{value}'")]
@@ -62,8 +73,26 @@ impl DiffError {
     pub fn non_string_index_key(path: &Spath, index_key: &serde_json::Value) -> Self {
         DiffError::NonStringIndexKey {
             path: path.clone(),
+            field: None,
             index_key: index_key.clone(),
         }
+    }
+
+    /// Like [`DiffError::non_string_index_key`], naming the composite key `field` at fault.
+    pub fn non_string_index_key_in_field(
+        path: &Spath,
+        field: &str,
+        index_key: &serde_json::Value,
+    ) -> Self {
+        DiffError::NonStringIndexKey {
+            path: path.clone(),
+            field: Some(field.to_string()),
+            index_key: index_key.clone(),
+        }
+    }
+
+    pub fn invalid_index_key_declaration(path: &Spath) -> Self {
+        DiffError::InvalidIndexKeyDeclaration { path: path.clone() }
     }
 
     pub fn duplicate_index_key(path: &Spath, index_key: &str, value: &str) -> Self {
@@ -73,6 +102,13 @@ impl DiffError {
             value: value.to_string(),
         }
     }
+}
+
+/// Error-text suffix naming the composite key field at fault, empty for single-field keys.
+fn field_suffix(field: &Option<String>) -> String {
+    field
+        .as_ref()
+        .map_or_else(String::new, |f| format!(" in field '{f}'"))
 }
 
 fn json_value_type_name(value: &serde_json::Value) -> &'static str {

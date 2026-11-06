@@ -219,6 +219,18 @@ values are emitted directly in semantic paths, for example:
 `[id=item-2]`, `[id=1]`, or `[enabled=true]`. Object, array, and `null` identity
 values are rejected because they cannot be represented safely in a semantic path.
 
+#### Composite keys
+
+When an item is identified by several fields together, list them in an array:
+`"x-spatch-indexKey": ["region", "code"]`. Items match only when every listed field is equal,
+and paths carry one pair per field, in the schema's order:
+
+    /items/[region=eu,code=a1]/qty
+
+An empty array, or one with non-string entries, is an invalid declaration and is reported as a
+diff error. Errors for composite keys name the field at fault. Values containing `,` or `]` are
+not representable in a path filter.
+
 ### Library
 
 Spatch is designed to be pleasant to use directly from Rust. The `diff` API takes

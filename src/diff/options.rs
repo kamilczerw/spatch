@@ -100,6 +100,8 @@ pub struct DiffOptions<'a> {
     /// spatch looks for the custom `x-spatch-indexKey` property on array schemas. When
     /// present, array elements are diffed and emitted as semantic paths such as
     /// `/items/[id=item-42]` instead of index paths such as `/items/0`.
+    /// The property may be a field name or an array of field names that together identify an
+    /// item, e.g. `["region", "code"]`, which yields `/items/[region=eu,code=a1]`.
     /// Schema-aware diffing follows local JSON Schema references like
     /// `{ "$ref": "#/$defs/item" }` when walking `properties` and `items`, so
     /// nested arrays can each declare their own identity rules. Referenced
@@ -313,8 +315,8 @@ impl<'a> DiffOptions<'a> {
         self.resolver().items_schema(self.schema)
     }
 
-    pub(crate) fn index_key(&self) -> Option<&'a str> {
-        self.resolver().index_key(self.schema)
+    pub(crate) fn index_keys(&self) -> Option<Result<Vec<&'a str>, ()>> {
+        self.resolver().index_keys(self.schema)
     }
 }
 
