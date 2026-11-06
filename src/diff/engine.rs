@@ -1093,7 +1093,8 @@ mod tests {
         assert!(let Err(e) = crate::diff::diff(&left, &right, options));
         check!(
             e.to_string()
-                == "Expected array items at path /foo to be objects for schema-aware diffing, but found string"
+                == "left: Expected array items at path /foo to be objects for schema-aware diffing, but found string\n\
+                    right: Expected array items at path /foo to be objects for schema-aware diffing, but found string"
         );
     }
 
