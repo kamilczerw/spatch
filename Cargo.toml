@@ -2,6 +2,7 @@
 name = "spatch"
 version = "0.7.2"
 edition = "2024"
+rust-version = "1.89"
 description = "JSON Patch (RFC 6902) library and CLI with optional schema-aware paths for stable array element addressing"
 license-file = "LICENSE"
 repository = "https://github.com/kamilczerw/spatch"
