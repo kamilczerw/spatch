@@ -52,6 +52,40 @@ down to ordinary RFC 6902 patches.
   - Schema‑aware semantic paths
 - Usable as both a **library** and a **CLI**
 
+## Install with Nix
+
+Run it without installing:
+
+```sh
+nix run github:kamilczerw/spatch -- --help
+```
+
+Add it to a devshell:
+
+```nix
+{
+  inputs.spatch.url = "github:kamilczerw/spatch";
+
+  outputs = { nixpkgs, spatch, ... }: let
+    system = "x86_64-linux";
+    pkgs = nixpkgs.legacyPackages.${system};
+  in {
+    devShells.${system}.default = pkgs.mkShell {
+      packages = [ spatch.packages.${system}.default ];
+    };
+  };
+}
+```
+
+Or use the overlay to get `pkgs.spatch`:
+
+```nix
+pkgs = import nixpkgs {
+  inherit system;
+  overlays = [ spatch.overlays.default ];
+};
+```
+
 ## Usage
 
 There are 2 ways to use this crate - as cli or as a library.

@@ -12,7 +12,7 @@
       nixpkgs,
       flake-utils,
     }:
-    flake-utils.lib.eachSystem
+    (flake-utils.lib.eachSystem
       [
         "x86_64-linux"
         "aarch64-linux"
@@ -34,6 +34,8 @@
             cargoLock.lockFile = ./Cargo.lock;
           };
 
+          apps.default = flake-utils.lib.mkApp { drv = self.packages.${system}.default; };
+
           devShells.default = pkgs.mkShell {
             packages = [
               pkgs.rustc
@@ -41,5 +43,11 @@
             ];
           };
         }
-      );
+      )
+    )
+    // {
+      overlays.default = final: prev: {
+        spatch = self.packages.${final.stdenv.hostPlatform.system}.default;
+      };
+    };
 }
