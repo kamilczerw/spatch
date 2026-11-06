@@ -103,17 +103,20 @@ impl DiffErrorSummary {
     }
 }
 
+/// Lists every error, one per line, prefixed with `left:` or `right:` depending on the input
+/// it was found in.
 impl fmt::Display for DiffErrorSummary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(error) = self.left.first().or_else(|| self.right.first()) {
-            write!(f, "{error}")
-        } else {
-            write!(
-                f,
-                "Diff errors occurred; left: {:?}, right: {:?}",
-                self.left, self.right
-            )
+        if self.is_empty() {
+            return write!(f, "Diff failed without a recorded error");
         }
+
+        let lines = self
+            .left
+            .iter()
+            .map(|e| format!("left: {e}"))
+            .chain(self.right.iter().map(|e| format!("right: {e}")));
+        write!(f, "{}", lines.collect::<Vec<_>>().join("\n"))
     }
 }
 
@@ -128,5 +131,45 @@ impl Add for DiffErrorSummary {
         let mut right = self.right;
         right.extend(rhs.right);
         DiffErrorSummary { left, right }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use assert2::check;
+
+    use super::*;
+
+    fn missing(path: &str) -> DiffError {
+        DiffError::missing_index_key(&path.try_into().unwrap(), "id")
+    }
+
+    #[test]
+    fn display_should_list_every_left_and_right_error_one_per_line() {
+        let summary = DiffErrorSummary::new(
+            vec![missing("/n/0"), missing("/n/1")],
+            vec![missing("/n/2")],
+        );
+
+        check!(
+            summary.to_string()
+                == "left: Item /n/0 is missing index key 'id'\n\
+                    left: Item /n/1 is missing index key 'id'\n\
+                    right: Item /n/2 is missing index key 'id'"
+        );
+    }
+
+    #[test]
+    fn display_should_handle_a_single_side() {
+        let left_only = DiffErrorSummary::new(vec![missing("/n/0")], vec![]);
+        let right_only = DiffErrorSummary::new(vec![], vec![missing("/n/0")]);
+
+        check!(left_only.to_string() == "left: Item /n/0 is missing index key 'id'");
+        check!(right_only.to_string() == "right: Item /n/0 is missing index key 'id'");
+    }
+
+    #[test]
+    fn display_of_an_empty_summary_should_not_be_blank() {
+        check!(!DiffErrorSummary::empty().to_string().is_empty());
     }
 }
