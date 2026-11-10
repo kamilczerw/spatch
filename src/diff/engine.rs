@@ -313,7 +313,52 @@ fn index_key_value_to_filter(value: &Value) -> Option<String> {
     }
 }
 
+/// Path of the array element at `index` under `array_path`.
+fn item_path(array_path: &Spath, index: usize) -> Spath {
+    array_path.push(crate::path::Segment::Field(index.to_string()))
+}
+
+/// Single-op patch removing the array element at `path`.
+fn remove_at(path: Spath) -> Patch {
+    Patch::new_with_op(super::PatchOp::remove(path))
+}
+
+/// Single-op patch adding `value` at `path` (`-` appends).
+fn add_at(path: Spath, value: &Value) -> Patch {
+    Patch::new_with_op(super::PatchOp::add(path, value.clone()))
+}
+
+/// Diffs two arrays positionally.
+///
+/// Thin wrapper over [`diff_array_indexed_legacy`]; the algorithm choice
+/// will be dispatched here.
 fn diff_array_indexed(
+    left_array: &[Value],
+    right_array: &[Value],
+    options: DiffOptions,
+    path_pointer: &Spath,
+    patch_ops: &Patch,
+) -> (Patch, DiffErrorSummary) {
+    diff_array_indexed_legacy(left_array, right_array, options, path_pointer, patch_ops)
+}
+
+/// Options for array items: the `items` schema when present, else no schema.
+fn items_options(options: DiffOptions) -> DiffOptions {
+    match options.items_schema() {
+        Some(sub_schema) => options.with_optional_schema(Some(sub_schema)),
+        None => options.without_schema(),
+    }
+}
+
+/// Path of the JSON Patch end-of-array marker (`-`) under `array_path`.
+fn append_path(array_path: &Spath) -> Spath {
+    array_path.push(crate::path::Segment::Field("-".to_owned()))
+}
+
+/// Legacy positional array diff: four deterministic fast paths (truncate,
+/// remove-from-front, append, add-to-front), then an index-by-index
+/// recursive fallback with trailing removals/additions.
+fn diff_array_indexed_legacy(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,
@@ -323,26 +368,18 @@ fn diff_array_indexed(
     let len_left = left_array.len();
     let len_right = right_array.len();
 
-    let item_options = if let Some(sub_schema) = options.items_schema() {
-        options.with_optional_schema(Some(sub_schema))
-    } else {
-        options.without_schema()
-    };
-
-    // --------
-    // Fast paths (deterministic, human-friendly)
-    // --------
+    let item_options = items_options(options);
 
     // 1) Pure truncate from the end: right is a prefix of left
     // left:  [a,b,c]
     // right: [a,b]
     if len_right <= len_left && left_array[..len_right] == *right_array {
         // remove from the end, descending indexes
-        let mut patch = Patch::default();
-        for i in (len_right..len_left).rev() {
-            let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
-            patch = patch + Patch::new_with_op(super::PatchOp::remove(child_path));
-        }
+        let patch = (len_right..len_left)
+            .rev()
+            .fold(Patch::default(), |acc, i| {
+                acc + remove_at(item_path(path_pointer, i))
+            });
         return (patch, DiffErrorSummary::empty());
     }
 
@@ -351,11 +388,9 @@ fn diff_array_indexed(
     // right: [b,c]
     if len_right <= len_left && left_array[len_left - len_right..] == *right_array {
         // remove index 0 repeatedly
-        let mut patch = Patch::default();
-        for _ in 0..(len_left - len_right) {
-            let child_path = path_pointer.push(crate::path::Segment::Field("0".to_owned()));
-            patch = patch + Patch::new_with_op(super::PatchOp::remove(child_path));
-        }
+        let patch = (0..(len_left - len_right)).fold(Patch::default(), |acc, _| {
+            acc + remove_at(item_path(path_pointer, 0))
+        });
         return (patch, DiffErrorSummary::empty());
     }
 
@@ -363,11 +398,12 @@ fn diff_array_indexed(
     // left:  [a,b]
     // right: [a,b,c]
     if len_left <= len_right && right_array[..len_left] == *left_array {
-        let mut patch = Patch::default();
-        for el in &right_array[len_left..] {
-            let child_path = path_pointer.push(crate::path::Segment::Field("-".to_owned()));
-            patch = patch + Patch::new_with_op(super::PatchOp::add(child_path, el.clone()));
-        }
+        let append_path = append_path(path_pointer);
+        let patch = right_array[len_left..]
+            .iter()
+            .fold(Patch::default(), |acc, el| {
+                acc + add_at(append_path.clone(), el)
+            });
         return (patch, DiffErrorSummary::empty());
     }
 
@@ -375,32 +411,28 @@ fn diff_array_indexed(
     // left:  [b,c]
     // right: [a,b,c]
     //
-    // JSON Patch has no "insert at front" primitive; it’s still `add /arr/0`.
+    // JSON Patch has no "insert at front" primitive; it's still `add /arr/0`.
+    // Inserting multiple at index 0 is done in reverse so final order is correct.
     if len_left <= len_right && right_array[len_right - len_left..] == *left_array {
-        let mut patch = Patch::default();
-        // add to front in increasing order so final order matches `right`
-        for el in right_array[..(len_right - len_left)].iter().rev() {
-            // inserting multiple at index 0: do it in reverse so final order is correct
-            let child_path = path_pointer.push(crate::path::Segment::Field("0".to_owned()));
-            patch = patch + Patch::new_with_op(super::PatchOp::add(child_path, el.clone()));
-        }
+        let patch = right_array[..(len_right - len_left)]
+            .iter()
+            .rev()
+            .fold(Patch::default(), |acc, el| {
+                acc + add_at(item_path(path_pointer, 0), el)
+            });
         return (patch, DiffErrorSummary::empty());
     }
 
-    // --------
-    // Fallback:
-    // --------
-
+    // Fallback: recurse index by index.
     let min_len = len_left.min(len_right);
 
     let recursed = (0..min_len)
         .map(|i| {
-            let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
             diff_recursive(
                 &left_array[i],
                 &right_array[i],
                 item_options,
-                &child_path,
+                &item_path(path_pointer, i),
                 patch_ops,
             )
         })
@@ -410,26 +442,19 @@ fn diff_array_indexed(
 
     // Extra elements in left_array (removals)
     // IMPORTANT: remove from end to avoid index shifting
-    let removals = (min_len..len_left)
-        .rev()
-        .map(|i| {
-            let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
-            Patch::new_with_op(super::PatchOp::remove(child_path))
-        })
-        .fold(Patch::default(), |acc, p| acc + p);
+    let removals = (min_len..len_left).rev().fold(Patch::default(), |acc, i| {
+        acc + remove_at(item_path(path_pointer, i))
+    });
 
     // Extra elements in right_array (additions)
+    let append_path = append_path(path_pointer);
     let additions = right_array[min_len..]
         .iter()
-        .map(|element| {
-            let child_path = path_pointer.push(crate::path::Segment::Field("-".to_owned()));
-            Patch::new_with_op(super::PatchOp::add(child_path, element.clone()))
-        })
-        .fold(Patch::default(), |acc, p| acc + p);
+        .fold(Patch::default(), |acc, el| {
+            acc + add_at(append_path.clone(), el)
+        });
 
-    let patch = recursed.0 + removals + additions;
-    let diff_errors = recursed.1;
-    (patch, diff_errors)
+    (recursed.0 + removals + additions, recursed.1)
 }
 
 #[cfg(test)]
