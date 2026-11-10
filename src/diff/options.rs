@@ -112,6 +112,22 @@ pub struct DiffOptions<'a> {
 
     /// Controls whether object diffs prefer smaller patches or nested patches.
     pub granularity: DiffGranularity,
+
+    /// Selects how arrays without identity keys are aligned. Propagates to
+    /// nested arrays.
+    pub array_algorithm: ArrayAlgorithm,
+}
+
+/// Selects the algorithm used to diff arrays addressed by index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum ArrayAlgorithm {
+    /// Legacy index-by-index comparison with a few fast paths. The default.
+    #[default]
+    Positional,
+
+    /// Myers sequence diff, so insertions/removals mid-array stay minimal.
+    Myers,
 }
 
 /// Controls how aggressively spatch collapses object changes.
@@ -270,6 +286,12 @@ impl<'a> DiffOptions<'a> {
         self
     }
 
+    /// Sets the array diff algorithm.
+    pub fn with_array_algorithm(mut self, array_algorithm: ArrayAlgorithm) -> Self {
+        self.array_algorithm = array_algorithm;
+        self
+    }
+
     /// Chooses review-friendly object diffs.
     ///
     /// In granular mode, spatch keeps walking into objects and emits nested
@@ -326,6 +348,26 @@ impl<'a> Default for DiffOptions<'a> {
             schema: None,
             root_schema: None,
             granularity: DiffGranularity::Compact,
+            array_algorithm: ArrayAlgorithm::Positional,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn array_algorithm_should_default_to_positional() {
+        assert_eq!(
+            DiffOptions::new().array_algorithm,
+            ArrayAlgorithm::Positional
+        );
+    }
+
+    #[test]
+    fn with_array_algorithm_should_select_myers() {
+        let options = DiffOptions::new().with_array_algorithm(ArrayAlgorithm::Myers);
+        assert_eq!(options.array_algorithm, ArrayAlgorithm::Myers);
     }
 }

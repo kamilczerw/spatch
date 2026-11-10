@@ -6,7 +6,7 @@ use crate::{
     diff::{
         DiffOptions,
         error::{DiffError, DiffErrorSummary},
-        options::DiffGranularity,
+        options::{ArrayAlgorithm, DiffGranularity},
     },
     path::Spath,
 };
@@ -328,11 +328,28 @@ fn add_at(path: Spath, value: &Value) -> Patch {
     Patch::new_with_op(super::PatchOp::add(path, value.clone()))
 }
 
-/// Diffs two arrays positionally.
-///
-/// Thin wrapper over [`diff_array_indexed_legacy`]; the algorithm choice
-/// will be dispatched here.
+/// Diffs two arrays, dispatching on [`DiffOptions::array_algorithm`].
 fn diff_array_indexed(
+    left_array: &[Value],
+    right_array: &[Value],
+    options: DiffOptions,
+    path_pointer: &Spath,
+    patch_ops: &Patch,
+) -> (Patch, DiffErrorSummary) {
+    match options.array_algorithm {
+        ArrayAlgorithm::Positional => {
+            diff_array_indexed_legacy(left_array, right_array, options, path_pointer, patch_ops)
+        }
+        ArrayAlgorithm::Myers => {
+            diff_array_indexed_myers(left_array, right_array, options, path_pointer, patch_ops)
+        }
+    }
+}
+
+/// Myers array diff.
+// ponytail: stub delegating to legacy; real implementation is phase 4.
+// TODO(phase 4): replace with the Myers-based diff.
+fn diff_array_indexed_myers(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,

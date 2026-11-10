@@ -11,7 +11,9 @@ pub fn handle_diff_command(args: DiffArgs) -> Result<(), Box<dyn std::error::Err
         None
     };
 
-    let diff_options = DiffOptions::new().with_granularity(args.granularity.into());
+    let diff_options = DiffOptions::new()
+        .with_granularity(args.granularity.into())
+        .with_array_algorithm(args.array_algorithm.into());
     let diff_options = match schema {
         Some(schema) => diff_options.with_schema(schema),
         None => diff_options,
