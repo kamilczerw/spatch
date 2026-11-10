@@ -432,7 +432,8 @@ fn diff_array_indexed_myers(
     diff_ops(left_array, right_array)
         .iter()
         .rev()
-        .filter(|op| op.tag() != DiffTag::Equal)
+        // Equal runs add no ops, but their items still need identity validation.
+        .filter(|op| op.tag() != DiffTag::Equal || item_options.schema.is_some())
         .map(|hunk| {
             hunk_patch(
                 hunk,
@@ -2162,6 +2163,20 @@ mod tests {
                 .with_array_algorithm(algorithm);
             diff_recursive(left, right, options, &Spath::default(), &Patch::default()).1
         })
+    }
+
+    #[test]
+    fn myers_should_validate_identity_inside_equal_items() {
+        let schema = unkeyed_items_with_keyed_field("rows");
+        let left = serde_json::json!([{"rows": [{"x": 1}]}, 0]);
+        let right = serde_json::json!([{"rows": [{"x": 1}]}, 1]);
+
+        let [positional, myers] = errors_per_algorithm(&schema, &left, &right);
+
+        let missing_id = DiffError::missing_index_key(&path("/0/rows/0"), "id");
+        check!(positional.left.contains(&missing_id));
+        check!(myers.left.contains(&missing_id));
+        check!(myers == positional);
     }
 
     #[test]
