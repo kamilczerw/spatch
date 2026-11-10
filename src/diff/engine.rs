@@ -24,6 +24,79 @@ use super::Patch;
 /// It's used to identify unique items in an array for diffing purposes.
 pub(super) const HASH_KEY_PROP_NAME: &str = "x-spatch-indexKey";
 
+/// Where a pair of aligned values sits in each input document.
+///
+/// `left` is the path in the left document. Patch ops are applied to the left
+/// document, so every op path must come from `left` (RFC 6902).
+/// `right` is the path in the right document. It is only used to report
+/// errors found in the right input, so they point at a real location there.
+///
+/// The two differ once an array diff aligns `left[i]` with `right[j]` for
+/// `i != j`. Example: diffing `[0, 1, {"inner": [{}]}]` against
+/// `[1, {"inner": [{}]}]`, the object is `left[2]` and `right[1]`:
+///
+/// ```text
+/// location.left  = /2/inner/0   (a patch op for this item targets this path)
+/// location.right = /1/inner/0   (a missing-key error in the right input is reported here)
+/// ```
+#[derive(Debug, Default, Clone)]
+struct Location {
+    left: Spath,
+    right: Spath,
+}
+
+impl Location {
+    /// Both documents have the value at `path`.
+    ///
+    /// Example: `Location::both(&"/a".try_into()?)` gives `left = /a`, `right = /a`.
+    fn both(path: &Spath) -> Self {
+        Location {
+            left: path.clone(),
+            right: path.clone(),
+        }
+    }
+
+    /// Appends `segment` to both paths.
+    ///
+    /// Example: `{left: /a, right: /b}.push(Field("c"))` gives `{left: /a/c, right: /b/c}`.
+    fn push(&self, segment: crate::path::Segment) -> Self {
+        Location {
+            left: self.left.push(segment.clone()),
+            right: self.right.push(segment),
+        }
+    }
+
+    /// Appends the same filter segment (e.g. `[id=a]`) to both paths.
+    ///
+    /// Example: `{left: /rows, right: /rows}.push_filters([("id", "a")])` gives
+    /// `{left: /rows[id=a], right: /rows[id=a]}`.
+    fn push_filters<'a>(
+        &self,
+        pairs: impl IntoIterator<Item = (&'a str, &'a str)> + Clone,
+    ) -> Self {
+        Location {
+            left: self.left.push_filters(pairs.clone()),
+            right: self.right.push_filters(pairs),
+        }
+    }
+
+    /// Descends into `left[left_index]` and `right[right_index]` of an array.
+    ///
+    /// Example: `{left: /t, right: /t}.array_item(2, 1)` gives
+    /// `{left: /t/2, right: /t/1}`: the item at index 2 on the left was aligned
+    /// with the item at index 1 on the right.
+    fn array_item(&self, left_index: usize, right_index: usize) -> Self {
+        Location {
+            left: item_path(&self.left, left_index),
+            right: item_path(&self.right, right_index),
+        }
+    }
+}
+
+/// Diffs `left` against `right`, both located at `path_pos` in their documents.
+///
+/// Example: for left `{"a": 1}` and right `{"a": 2}` at the root, the result
+/// is the single op `replace /a 2`.
 pub(super) fn diff_recursive(
     left: &serde_json::Value,
     right: &serde_json::Value,
@@ -31,16 +104,31 @@ pub(super) fn diff_recursive(
     path_pos: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
+    diff_at(left, right, options, &Location::both(path_pos), patch_ops)
+}
+
+/// Like [`diff_recursive`], but the two values may sit at different paths.
+///
+/// Patch ops use `location.left`; errors for the right input use
+/// `location.right`. Example: for `left[2]` aligned with `right[1]`, an op is
+/// `replace /t/2/x ..` while a right-side error is reported at `/t/1/x`.
+fn diff_at(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+    options: DiffOptions,
+    location: &Location,
+    patch_ops: &Patch,
+) -> (Patch, DiffErrorSummary) {
     match (left, right) {
         (Value::Object(left_map), Value::Object(right_map)) => {
-            diff_object(left_map, right_map, options, path_pos, patch_ops)
+            diff_object(left_map, right_map, options, location, patch_ops)
         }
         (Value::Array(left_array), Value::Array(right_array)) => {
-            diff_array(left_array, right_array, options, path_pos, patch_ops)
+            diff_array(left_array, right_array, options, location, patch_ops)
         }
         (left, right) if left == right => (Patch::default(), DiffErrorSummary::empty()), // Values are equal, no diff needed
         (_, right) => {
-            let patch = super::PatchOp::replace(path_pos.clone(), right.clone());
+            let patch = super::PatchOp::replace(location.left.clone(), right.clone());
             // patch_ops.push(patch.clone());
 
             (Patch::new(vec![patch]), DiffErrorSummary::empty())
@@ -52,7 +140,7 @@ fn diff_object(
     left_map: &serde_json::Map<String, Value>,
     right_map: &serde_json::Map<String, Value>,
     options: DiffOptions,
-    path_pointer: &Spath,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     let inner_patch = right_map
@@ -64,18 +152,18 @@ fn diff_object(
                 Some(left_value) => {
                     let child_options = options.with_optional_schema(sub_schema);
 
-                    let child_path = path_pointer.push(crate::path::Segment::Field(key.clone()));
-                    diff_recursive(
+                    let child_location = location.push(crate::path::Segment::Field(key.clone()));
+                    diff_at(
                         left_value,
                         right_value,
                         child_options,
-                        &child_path,
+                        &child_location,
                         patch_ops,
                     )
                 }
                 // Otherwise, it's an addition
                 None => {
-                    let child_path = path_pointer.push(crate::path::Segment::Field(key.clone()));
+                    let child_path = location.left.push(crate::path::Segment::Field(key.clone()));
                     let patch_op = super::PatchOp::add(child_path.clone(), right_value.clone());
 
                     (Patch::new(vec![patch_op]), DiffErrorSummary::empty())
@@ -90,7 +178,7 @@ fn diff_object(
     for key in left_map.keys() {
         // If the key is missing in the right map, it's a removal
         if !right_map.contains_key(key) {
-            let child_path = path_pointer.push(crate::path::Segment::Field(key.clone()));
+            let child_path = location.left.push(crate::path::Segment::Field(key.clone()));
             let child_op = super::PatchOp::remove(child_path.clone());
             removals.push(child_op);
         }
@@ -98,7 +186,7 @@ fn diff_object(
 
     let replace_patch = {
         let patch_op =
-            super::PatchOp::replace(path_pointer.clone(), Value::Object(right_map.clone()));
+            super::PatchOp::replace(location.left.clone(), Value::Object(right_map.clone()));
         Patch::new(vec![patch_op])
     };
 
@@ -146,23 +234,23 @@ fn diff_array(
     left: &[Value],
     right: &[Value],
     options: DiffOptions<'_>,
-    path_pointer: &Spath,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     // TODO: emit warning if the schema is missing an index key when the schema is provided
     match options.index_keys() {
         // If the schema specifies an index key, use keyed diffing
-        Some(Ok(keys)) => diff_array_keyed(left, right, &keys, options, path_pointer, patch_ops),
+        Some(Ok(keys)) => diff_array_keyed(left, right, &keys, options, location, patch_ops),
         // A malformed declaration is a schema error; report it for both inputs.
-        Some(Err(())) => {
-            let error = DiffError::invalid_index_key_declaration(path_pointer);
-            (
-                Patch::default(),
-                DiffErrorSummary::new(vec![error.clone()], vec![error]),
-            )
-        }
+        Some(Err(())) => (
+            Patch::default(),
+            DiffErrorSummary::new(
+                vec![DiffError::invalid_index_key_declaration(&location.left)],
+                vec![DiffError::invalid_index_key_declaration(&location.right)],
+            ),
+        ),
         // Otherwise, use index based diffing
-        None => diff_array_indexed(left, right, options, path_pointer, patch_ops),
+        None => diff_array_indexed(left, right, options, location, patch_ops),
     }
 }
 
@@ -170,7 +258,7 @@ fn diff_array(
 fn filter_pairs<'a>(
     keys: &'a [&str],
     identity: &'a [String],
-) -> impl Iterator<Item = (&'a str, &'a str)> {
+) -> impl Iterator<Item = (&'a str, &'a str)> + Clone {
     keys.iter()
         .copied()
         .zip(identity.iter().map(String::as_str))
@@ -181,12 +269,12 @@ fn diff_array_keyed(
     right: &[Value],
     index_keys: &[&str],
     options: DiffOptions,
-    path_pointer: &Spath,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     // Build maps: composite identity (one value per index key field) -> element
-    let (map_left, errors_left) = build_key_map(left, index_keys, path_pointer);
-    let (map_right, errors_right) = build_key_map(right, index_keys, path_pointer);
+    let (map_left, errors_left) = build_key_map(left, index_keys, &location.left);
+    let (map_right, errors_right) = build_key_map(right, index_keys, &location.right);
 
     let keys_a: HashSet<_> = map_left.keys().cloned().collect();
     let keys_b: HashSet<_> = map_right.keys().cloned().collect();
@@ -204,7 +292,7 @@ fn diff_array_keyed(
     let removed = removed_keys
         .into_iter()
         .map(|key| {
-            let child_path = path_pointer.push_filters(filter_pairs(index_keys, key));
+            let child_path = location.left.push_filters(filter_pairs(index_keys, key));
             Patch::new_with_op(super::PatchOp::remove(child_path.clone()))
         })
         .fold(Patch::default(), |acc, p| acc + p);
@@ -213,7 +301,9 @@ fn diff_array_keyed(
     let added = added_keys
         .into_iter()
         .map(|key| {
-            let child_path = path_pointer.push(crate::path::Segment::Field("-".to_string()));
+            let child_path = location
+                .left
+                .push(crate::path::Segment::Field("-".to_string()));
             let val = &map_right[key];
 
             Patch::new_with_op(super::PatchOp::add(child_path.clone(), val.clone()))
@@ -227,15 +317,15 @@ fn diff_array_keyed(
     let modified = modified_keys
         .into_iter()
         .map(|key| {
-            let child_path = path_pointer.push_filters(filter_pairs(index_keys, key));
+            let child_location = location.push_filters(filter_pairs(index_keys, key));
             let value_left = &map_left[key];
             let value_right = &map_right[key];
 
-            diff_recursive(
+            diff_at(
                 value_left,
                 value_right,
                 child_options,
-                &child_path,
+                &child_location,
                 patch_ops,
             )
         })
@@ -340,15 +430,15 @@ fn diff_array_indexed(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,
-    path_pointer: &Spath,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     match options.array_algorithm {
         ArrayAlgorithm::Positional => {
-            diff_array_indexed_legacy(left_array, right_array, options, path_pointer, patch_ops)
+            diff_array_indexed_legacy(left_array, right_array, options, location, patch_ops)
         }
         ArrayAlgorithm::Myers => {
-            diff_array_indexed_myers(left_array, right_array, options, path_pointer, patch_ops)
+            diff_array_indexed_myers(left_array, right_array, options, location, patch_ops)
         }
     }
 }
@@ -362,21 +452,22 @@ fn diff_array_indexed_myers(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,
-    path_pointer: &Spath,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     let item_options = items_options(options);
     diff_ops(left_array, right_array)
         .iter()
         .rev()
-        .filter(|op| op.tag() != DiffTag::Equal)
+        // Equal runs add no ops, but their items still need identity validation.
+        .filter(|op| op.tag() != DiffTag::Equal || item_options.schema.is_some())
         .map(|hunk| {
             hunk_patch(
                 hunk,
                 left_array,
                 right_array,
                 item_options,
-                path_pointer,
+                location,
                 patch_ops,
             )
         })
@@ -405,7 +496,7 @@ fn hunk_patch(
     left: &[Value],
     right: &[Value],
     item_options: DiffOptions,
-    path_pointer: &Spath,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     let (old, new) = (hunk.old_range(), hunk.new_range());
@@ -414,15 +505,15 @@ fn hunk_patch(
         left.len(),
         old.start + paired..old.end,
         &right[new.start + paired..new.end],
-        path_pointer,
+        &location.left,
     );
     let recursed = (0..paired)
         .map(|i| {
-            diff_recursive(
+            diff_at(
                 &left[old.start + i],
                 &right[new.start + i],
                 item_options,
-                &item_path(path_pointer, old.start + i),
+                &location.array_item(old.start + i, new.start + i),
                 patch_ops,
             )
         })
@@ -479,9 +570,10 @@ fn diff_array_indexed_legacy(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,
-    path_pointer: &Spath,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
+    let path_pointer = &location.left;
     let len_left = left_array.len();
     let len_right = right_array.len();
 
@@ -545,11 +637,11 @@ fn diff_array_indexed_legacy(
 
     let recursed = (0..min_len)
         .map(|i| {
-            diff_recursive(
+            diff_at(
                 &left_array[i],
                 &right_array[i],
                 item_options,
-                &item_path(path_pointer, i),
+                &location.array_item(i, i),
                 patch_ops,
             )
         })
@@ -779,6 +871,53 @@ mod tests {
         check!(patch_contains_semantic_path(&copy_patch));
     }
 
+    /// Compact granularity keeps field-level ops with semantic `[id=..]` paths instead of replacing the level.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {
+    ///     "tracks": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {
+    ///         "type": "object",
+    ///         "properties": {
+    ///           "id": {"type": "string"},
+    ///           "levels": {
+    ///             "type": "array",
+    ///             "x-spatch-indexKey": "id",
+    ///             "items": {"type": "object", "properties": {"id": {"type": "integer"}, "xp": {"type": "integer"}}}
+    ///           }
+    ///         }
+    ///       }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {
+    ///   "tracks": [{"id": "free", "levels": [{"id": 1, "xp": 100}, {"id": 2, "xp": 200}, {"id": 3, "xp": 300}]}]
+    /// }
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {
+    ///   "tracks": [{"id": "free", "levels": [{"id": 1, "xp": 1000}, {"id": 2, "xp": 2000}, {"id": 3, "xp": 3000}]}]
+    /// }
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [
+    ///   {"op": "replace", "path": "/tracks/[id=free]/levels/[id=1]/xp", "value": 1000},
+    ///   {"op": "replace", "path": "/tracks/[id=free]/levels/[id=2]/xp", "value": 2000},
+    ///   {"op": "replace", "path": "/tracks/[id=free]/levels/[id=3]/xp", "value": 3000}
+    /// ]
+    /// ```
     #[test]
     fn compact_granularity_should_preserve_schema_aware_semantic_paths() {
         let schema = serde_json::json!({
@@ -854,6 +993,27 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// A root `x-spatch-indexKey` is not inherited by `items` (no schema), so its array uses index paths.
+    ///
+    /// Schema:
+    /// ```json
+    /// {"x-spatch-indexKey": "id", "properties": {}}
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"name": "old"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"name": "new"}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/items/0/name", "value": "new"}]
+    /// ```
     #[test]
     fn schema_should_not_leak_to_object_property_without_schema() {
         let schema = serde_json::json!({
@@ -884,6 +1044,27 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// The key applies to the root array's items only; `nested` has no schema and uses index paths.
+    ///
+    /// Schema:
+    /// ```json
+    /// {"x-spatch-indexKey": "id"}
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// [{"id": "a", "nested": [{"name": "old"}]}]
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// [{"id": "a", "nested": [{"name": "new"}]}]
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/[id=a]/nested/0/name", "value": "new"}]
+    /// ```
     #[test]
     fn keyed_array_schema_should_not_leak_to_items_without_items_schema() {
         let schema = serde_json::json!({
@@ -915,6 +1096,39 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// Item schemas reached through `$ref` still supply nested index keys.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"tracks": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/track"}}},
+    ///   "$defs": {
+    ///     "track": {
+    ///       "type": "object",
+    ///       "properties": {
+    ///         "id": {"type": "string"},
+    ///         "levels": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/level"}}
+    ///       }
+    ///     },
+    ///     "level": {"type": "object", "properties": {"id": {"type": "string"}, "xp": {"type": "integer"}}}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"tracks": [{"id": "free", "levels": [{"id": "1", "xp": 100}]}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"tracks": [{"id": "free", "levels": [{"id": "1", "xp": 200}]}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/tracks/[id=free]/levels/[id=1]/xp", "value": 200}]
+    /// ```
     #[test]
     fn schema_ref_items_should_use_nested_array_index_keys() {
         let schema = serde_json::json!({
@@ -976,6 +1190,56 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// Index keys resolve through three levels of `$ref`ed item schemas.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"tracks": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/track"}}},
+    ///   "$defs": {
+    ///     "track": {
+    ///       "type": "object",
+    ///       "properties": {
+    ///         "id": {"type": "string"},
+    ///         "levels": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/level"}}
+    ///       }
+    ///     },
+    ///     "level": {
+    ///       "type": "object",
+    ///       "properties": {
+    ///         "id": {"type": "string"},
+    ///         "rewards": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/reward"}}
+    ///       }
+    ///     },
+    ///     "reward": {"type": "object", "properties": {"id": {"type": "string"}, "amount": {"type": "integer"}}}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {
+    ///   "tracks": [{"id": "free", "levels": [{"id": "1", "rewards": [{"id": "reward-1", "amount": 100}]}]}]
+    /// }
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {
+    ///   "tracks": [{"id": "free", "levels": [{"id": "1", "rewards": [{"id": "reward-1", "amount": 200}]}]}]
+    /// }
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [
+    ///   {
+    ///     "op": "replace",
+    ///     "path": "/tracks/[id=free]/levels/[id=1]/rewards/[id=reward-1]/amount",
+    ///     "value": 200
+    ///   }
+    /// ]
+    /// ```
     #[test]
     fn schema_ref_items_should_use_deeply_nested_array_index_keys() {
         let schema = serde_json::json!({
@@ -1054,6 +1318,35 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// Integer index key values are accepted and rendered as `[id=1]`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {
+    ///     "levels": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "integer"}, "xp": {"type": "integer"}}}
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"levels": [{"id": 1, "xp": 100}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"levels": [{"id": 1, "xp": 200}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/levels/[id=1]/xp", "value": 200}]
+    /// ```
     #[test]
     fn schema_index_key_should_accept_numeric_values() {
         let schema = serde_json::json!({
@@ -1110,6 +1403,37 @@ mod tests {
     //     check!(patch_ops == expected_patch);
     // }
 
+    /// Removing a keyed item emits `remove` addressed by its key.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "remove", "path": "/foo/[id=bla]"}]
+    /// ```
     #[test]
     fn test_diff_recursive_with_schema_remove_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1132,6 +1456,37 @@ mod tests {
         check!(patch_ops[0] == expected_patch[0]);
     }
 
+    /// Adding a keyed item appends it with `-`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "add", "path": "/foo/-", "value": {"id": "bla", "count": 3}}]
+    /// ```
     #[test]
     fn test_diff_recursive_with_schema_add_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1157,6 +1512,37 @@ mod tests {
         check!(patch_ops[0] == expected_patch[0]);
     }
 
+    /// Changing a field of a keyed item replaces just that field.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 10}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/foo/[id=bla]/count", "value": 3}]
+    /// ```
     #[test]
     fn test_diff_recursive_with_schema_modify_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1183,6 +1569,40 @@ mod tests {
         check!(patch_ops[0] == expected_patch[0]);
     }
 
+    /// Negative case: items carry `key`, not the schema's index key `id`, so every item is reported.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"key": "abc", "count": 2}, {"key": "bla", "count": 10}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"key": "abc", "count": 2}, {"key": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /foo/0 is missing index key 'id'
+    /// left: Item /foo/1 is missing index key 'id'
+    /// right: Item /foo/0 is missing index key 'id'
+    /// right: Item /foo/1 is missing index key 'id'
+    /// ```
     #[test]
     fn diff_with_schema_and_not_matching_index_key_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1208,6 +1628,38 @@ mod tests {
         check!(diff_errors.right[1] == DiffError::missing_index_key(&path("/foo/1"), "id"));
     }
 
+    /// Negative case: two items share `id: "abc"`; the second is reported as a duplicate on both sides.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "abc", "count": 10}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "abc", "count": 3}]}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /foo/1 has duplicate index key 'id' with value 'abc'
+    /// right: Item /foo/1 has duplicate index key 'id' with value 'abc'
+    /// ```
     #[test]
     fn diff_with_schema_and_duplicate_index_key_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1233,6 +1685,52 @@ mod tests {
         );
     }
 
+    /// Negative case: object, array and null `id` values cannot form a semantic path.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {
+    ///   "foo": [
+    ///     {"id": {"nested": "object"}, "count": 2},
+    ///     {"id": ["array"], "count": 3},
+    ///     {"id": null, "count": 4}
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {
+    ///   "foo": [
+    ///     {"id": {"nested": "object"}, "count": 2},
+    ///     {"id": ["array"], "count": 3},
+    ///     {"id": null, "count": 4}
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /foo/0 has non-string index key: {"nested":"object"}
+    /// left: Item /foo/1 has non-string index key: ["array"]
+    /// left: Item /foo/2 has non-string index key: null
+    /// right: same three errors
+    /// ```
     #[test]
     fn diff_with_schema_and_unrepresentable_index_key_values_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1261,6 +1759,38 @@ mod tests {
         check!(diff_errors.right == expected_errors);
     }
 
+    /// Negative case: a keyed array holds strings, but keyed items must be objects.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": ["left-only"]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": ["right-only"]}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Expected array items at path /foo to be objects for schema-aware diffing, but found string
+    /// right: Expected array items at path /foo to be objects for schema-aware diffing, but found string
+    /// ```
     #[test]
     fn diff_with_schema_and_non_object_array_items_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1277,6 +1807,37 @@ mod tests {
         );
     }
 
+    /// Combines a keyed-item field change with removal of the root property `bar`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"bar": 1, "foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 10}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/foo/[id=bla]/count", "value": 10}, {"op": "remove", "path": "/bar"}]
+    /// ```
     #[test]
     fn test_diff_recursive_with_both_objects_add_and_remove() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1716,6 +2277,29 @@ mod tests {
         )
     }
 
+    /// A composite key yields a multi-pair filter segment `[region=eu,code=a1]`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1", "qty": 1}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1", "qty": 2}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/items/[region=eu,code=a1]/qty", "value": 2}]
+    /// ```
     #[test]
     fn composite_index_key_should_produce_multi_pair_filter_paths() {
         let left = serde_json::json!({"items": [{"region": "eu", "code": "a1", "qty": 1}]});
@@ -1733,6 +2317,32 @@ mod tests {
         );
     }
 
+    /// Items sharing only `region` are different identities: one removed, one added.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "b2"}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [
+    ///   {"op": "remove", "path": "/items/[region=eu,code=a1]"},
+    ///   {"op": "add", "path": "/items/-", "value": {"region": "eu", "code": "b2"}}
+    /// ]
+    /// ```
     #[test]
     fn composite_index_key_should_not_match_items_sharing_only_some_fields() {
         let left = serde_json::json!({"items": [{"region": "eu", "code": "a1"}]});
@@ -1753,6 +2363,29 @@ mod tests {
         );
     }
 
+    /// Reordering keyed items produces no ops.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1"}, {"region": "us", "code": "a1"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"region": "us", "code": "a1"}, {"region": "eu", "code": "a1"}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// []
+    /// ```
     #[test]
     fn composite_index_key_should_ignore_item_order() {
         let left = serde_json::json!({"items": [
@@ -1768,6 +2401,27 @@ mod tests {
         check!(patch.is_empty());
     }
 
+    /// A single string key still yields a single-pair `[id=a]` path.
+    ///
+    /// Schema:
+    /// ```json
+    /// {"properties": {"items": {"type": "array", "x-spatch-indexKey": "id", "items": {"type": "object"}}}}
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"id": "a", "qty": 1}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"id": "a", "qty": 2}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/items/[id=a]/qty", "value": 2}]
+    /// ```
     #[test]
     fn single_string_index_key_should_still_produce_single_pair_paths() {
         let schema = serde_json::json!({"properties": {"items": {
@@ -1794,6 +2448,29 @@ mod tests {
         );
     }
 
+    /// Negative case: the first item lacks `code`; the error names the missing field.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": []}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /items/0 is missing index key 'code'
+    /// ```
     #[test]
     fn composite_index_key_should_name_the_missing_field() {
         let left = serde_json::json!({"items": [{"region": "eu"}]});
@@ -1805,6 +2482,29 @@ mod tests {
         check!(errors.right.is_empty());
     }
 
+    /// Negative case: `code` is null, which cannot form a path; the error names the field.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": null}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": []}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /items/0 has non-string index key in field 'code': null
+    /// ```
     #[test]
     fn composite_index_key_should_name_the_field_with_an_unrepresentable_value() {
         let left = serde_json::json!({"items": [{"region": "eu", "code": null}]});
@@ -1826,6 +2526,29 @@ mod tests {
         );
     }
 
+    /// Negative case: two items share the same `region`+`code` combination.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1"}, {"region": "eu", "code": "a1"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": []}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /items/1 has duplicate index key 'region,code' with value 'eu,a1'
+    /// ```
     #[test]
     fn composite_index_key_should_report_duplicate_combinations() {
         let left = serde_json::json!({"items": [
@@ -1845,6 +2568,23 @@ mod tests {
         );
     }
 
+    /// Negative case: an `x-spatch-indexKey` that is not a string or non-empty string array is rejected.
+    ///
+    /// Schema (run twice, with `"x-spatch-indexKey": []` and then `["id", 1]`):
+    /// ```json
+    /// {"properties": {"items": {"type": "array", "x-spatch-indexKey": [], "items": {"type": "object"}}}}
+    /// ```
+    ///
+    /// Left and right (identical):
+    /// ```json
+    /// {"items": [{"id": "a"}]}
+    /// ```
+    ///
+    /// Expected errors (both declarations, both sides):
+    /// ```text
+    /// left: Array at /items has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings
+    /// right: Array at /items has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings
+    /// ```
     #[test]
     fn invalid_index_key_declarations_should_be_rejected() {
         for declaration in [serde_json::json!([]), serde_json::json!(["id", 1])] {
@@ -1860,6 +2600,31 @@ mod tests {
         }
     }
 
+    /// Composite paths with `=` and spaces in values survive JSON serialisation and apply to `left`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "a=b", "code": "x y", "qty": 1}, {"region": "eu", "code": "a1", "qty": 1}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"region": "a=b", "code": "x y", "qty": 2}, {"region": "eu", "code": "a1", "qty": 1}]}
+    /// ```
+    ///
+    /// Expected:
+    /// ```text
+    /// diff has no errors; the patch (qty 1 -> 2 on the `a=b` / `x y` item,
+    /// addressed by an escaped composite path) re-parses from its JSON form
+    /// and applies to `left`, yielding `right`
+    /// ```
     #[test]
     fn composite_paths_should_round_trip_through_the_parser_and_apply() {
         let left = serde_json::json!({"items": [
@@ -2070,5 +2835,128 @@ mod tests {
             check!(crate::patch::apply(left, &legacy_diff(left, right)).unwrap() == *right);
             myers_diff(left, right);
         }
+    }
+
+    /// Root schema: an unkeyed array whose items hold `field`, an array keyed by `id`.
+    fn unkeyed_items_with_keyed_field(field: &str) -> Value {
+        serde_json::json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    field: {
+                        "type": "array",
+                        "x-spatch-indexKey": "id",
+                        "items": {"type": "object", "properties": {"id": {"type": "string"}}}
+                    }
+                }
+            }
+        })
+    }
+
+    /// Diff errors of `left` -> `right` under `schema`, for each array algorithm.
+    fn errors_per_algorithm(schema: &Value, left: &Value, right: &Value) -> [DiffErrorSummary; 2] {
+        [ArrayAlgorithm::Positional, ArrayAlgorithm::Myers].map(|algorithm| {
+            let options = DiffOptions::new()
+                .with_schema(schema)
+                .granular()
+                .with_array_algorithm(algorithm);
+            diff_recursive(left, right, options, &Spath::default(), &Patch::default()).1
+        })
+    }
+
+    /// Myers still validates identity inside unchanged items (the first), like Positional.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "array",
+    ///   "items": {
+    ///     "type": "object",
+    ///     "properties": {
+    ///       "rows": {
+    ///         "type": "array",
+    ///         "x-spatch-indexKey": "id",
+    ///         "items": {"type": "object", "properties": {"id": {"type": "string"}}}
+    ///       }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// [{"rows": [{"x": 1}]}, 0]
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// [{"rows": [{"x": 1}]}, 1]
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /0/rows/0 is missing index key 'id'
+    /// (Positional and Myers report identical errors)
+    /// ```
+    #[test]
+    fn myers_should_validate_identity_inside_equal_items() {
+        let schema = unkeyed_items_with_keyed_field("rows");
+        let left = serde_json::json!([{"rows": [{"x": 1}]}, 0]);
+        let right = serde_json::json!([{"rows": [{"x": 1}]}, 1]);
+
+        let [positional, myers] = errors_per_algorithm(&schema, &left, &right);
+
+        let missing_id = DiffError::missing_index_key(&path("/0/rows/0"), "id");
+        check!(positional.left.contains(&missing_id));
+        check!(myers.left.contains(&missing_id));
+        check!(myers == positional);
+    }
+
+    /// After an earlier removal, a right-side error uses the item's index in `right`, not in `left`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "array",
+    ///   "items": {
+    ///     "type": "object",
+    ///     "properties": {
+    ///       "inner": {
+    ///         "type": "array",
+    ///         "x-spatch-indexKey": "id",
+    ///         "items": {"type": "object", "properties": {"id": {"type": "string"}}}
+    ///       }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// [0, 1, {"inner": [{"id": "a"}]}]
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// [1, {"inner": [{}]}]
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// right: Item /1/inner/0 is missing index key 'id'
+    /// (Positional pairs the item with `1` and reports nothing)
+    /// ```
+    #[test]
+    fn myers_should_report_right_errors_at_right_indices_after_edits() {
+        let schema = unkeyed_items_with_keyed_field("inner");
+        let left = serde_json::json!([0, 1, {"inner": [{"id": "a"}]}]);
+        let right = serde_json::json!([1, {"inner": [{}]}]);
+
+        // Positional pairs `{"inner": [{}]}` with `1` (a replace), so it reports nothing here.
+        let [_, myers] = errors_per_algorithm(&schema, &left, &right);
+
+        let right_error = DiffError::missing_index_key(&path("/1/inner/0"), "id");
+        check!(myers.right == vec![right_error]);
     }
 }
