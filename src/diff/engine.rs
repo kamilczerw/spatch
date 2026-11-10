@@ -485,7 +485,7 @@ fn hunk_patch(
                 &left[old.start + i],
                 &right[new.start + i],
                 item_options,
-                &paths.item(old.start + i, old.start + i),
+                &paths.item(old.start + i, new.start + i),
                 patch_ops,
             )
         })
@@ -2134,5 +2134,46 @@ mod tests {
             check!(crate::patch::apply(left, &legacy_diff(left, right)).unwrap() == *right);
             myers_diff(left, right);
         }
+    }
+
+    /// Root schema: an unkeyed array whose items hold `field`, an array keyed by `id`.
+    fn unkeyed_items_with_keyed_field(field: &str) -> Value {
+        serde_json::json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    field: {
+                        "type": "array",
+                        "x-spatch-indexKey": "id",
+                        "items": {"type": "object", "properties": {"id": {"type": "string"}}}
+                    }
+                }
+            }
+        })
+    }
+
+    /// Diff errors of `left` -> `right` under `schema`, for each array algorithm.
+    fn errors_per_algorithm(schema: &Value, left: &Value, right: &Value) -> [DiffErrorSummary; 2] {
+        [ArrayAlgorithm::Positional, ArrayAlgorithm::Myers].map(|algorithm| {
+            let options = DiffOptions::new()
+                .with_schema(schema)
+                .granular()
+                .with_array_algorithm(algorithm);
+            diff_recursive(left, right, options, &Spath::default(), &Patch::default()).1
+        })
+    }
+
+    #[test]
+    fn myers_should_report_right_errors_at_right_indices_after_edits() {
+        let schema = unkeyed_items_with_keyed_field("inner");
+        let left = serde_json::json!([0, 1, {"inner": [{"id": "a"}]}]);
+        let right = serde_json::json!([1, {"inner": [{}]}]);
+
+        // Positional pairs `{"inner": [{}]}` with `1` (a replace), so it reports nothing here.
+        let [_, myers] = errors_per_algorithm(&schema, &left, &right);
+
+        let right_error = DiffError::missing_index_key(&path("/1/inner/0"), "id");
+        check!(myers.right == vec![right_error]);
     }
 }
