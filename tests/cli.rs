@@ -63,6 +63,32 @@ fn invalid_granularity_should_be_rejected_with_the_accepted_values() {
     );
 }
 
+/// Negative case: items lack the schema's `id` key, so `spatch diff` prints each error and exits 1.
+///
+/// Schema (`--schema`):
+/// ```json
+/// {
+///   "type": "object",
+///   "properties": {"n": {"type": "array", "x-spatch-indexKey": "id", "items": {"type": "object"}}}
+/// }
+/// ```
+///
+/// Left:
+/// ```json
+/// {"n": [{"x": 1}, {"x": 2}]}
+/// ```
+///
+/// Right:
+/// ```json
+/// {"n": [{"x": 1}]}
+/// ```
+///
+/// Expected stderr (exit code 1, empty stdout):
+/// ```text
+/// left: Item /n/0 is missing index key 'id'
+/// left: Item /n/1 is missing index key 'id'
+/// right: Item /n/0 is missing index key 'id'
+/// ```
 #[test]
 fn failing_diff_should_print_every_error_one_per_line_and_exit_1() {
     let schema = write_json(

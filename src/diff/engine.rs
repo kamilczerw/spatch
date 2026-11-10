@@ -844,6 +844,53 @@ mod tests {
         check!(patch_contains_semantic_path(&copy_patch));
     }
 
+    /// Compact granularity keeps field-level ops with semantic `[id=..]` paths instead of replacing the level.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {
+    ///     "tracks": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {
+    ///         "type": "object",
+    ///         "properties": {
+    ///           "id": {"type": "string"},
+    ///           "levels": {
+    ///             "type": "array",
+    ///             "x-spatch-indexKey": "id",
+    ///             "items": {"type": "object", "properties": {"id": {"type": "integer"}, "xp": {"type": "integer"}}}
+    ///           }
+    ///         }
+    ///       }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {
+    ///   "tracks": [{"id": "free", "levels": [{"id": 1, "xp": 100}, {"id": 2, "xp": 200}, {"id": 3, "xp": 300}]}]
+    /// }
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {
+    ///   "tracks": [{"id": "free", "levels": [{"id": 1, "xp": 1000}, {"id": 2, "xp": 2000}, {"id": 3, "xp": 3000}]}]
+    /// }
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [
+    ///   {"op": "replace", "path": "/tracks/[id=free]/levels/[id=1]/xp", "value": 1000},
+    ///   {"op": "replace", "path": "/tracks/[id=free]/levels/[id=2]/xp", "value": 2000},
+    ///   {"op": "replace", "path": "/tracks/[id=free]/levels/[id=3]/xp", "value": 3000}
+    /// ]
+    /// ```
     #[test]
     fn compact_granularity_should_preserve_schema_aware_semantic_paths() {
         let schema = serde_json::json!({
@@ -919,6 +966,27 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// A root `x-spatch-indexKey` is not inherited by `items` (no schema), so its array uses index paths.
+    ///
+    /// Schema:
+    /// ```json
+    /// {"x-spatch-indexKey": "id", "properties": {}}
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"name": "old"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"name": "new"}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/items/0/name", "value": "new"}]
+    /// ```
     #[test]
     fn schema_should_not_leak_to_object_property_without_schema() {
         let schema = serde_json::json!({
@@ -949,6 +1017,27 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// The key applies to the root array's items only; `nested` has no schema and uses index paths.
+    ///
+    /// Schema:
+    /// ```json
+    /// {"x-spatch-indexKey": "id"}
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// [{"id": "a", "nested": [{"name": "old"}]}]
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// [{"id": "a", "nested": [{"name": "new"}]}]
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/[id=a]/nested/0/name", "value": "new"}]
+    /// ```
     #[test]
     fn keyed_array_schema_should_not_leak_to_items_without_items_schema() {
         let schema = serde_json::json!({
@@ -980,6 +1069,39 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// Item schemas reached through `$ref` still supply nested index keys.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"tracks": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/track"}}},
+    ///   "$defs": {
+    ///     "track": {
+    ///       "type": "object",
+    ///       "properties": {
+    ///         "id": {"type": "string"},
+    ///         "levels": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/level"}}
+    ///       }
+    ///     },
+    ///     "level": {"type": "object", "properties": {"id": {"type": "string"}, "xp": {"type": "integer"}}}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"tracks": [{"id": "free", "levels": [{"id": "1", "xp": 100}]}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"tracks": [{"id": "free", "levels": [{"id": "1", "xp": 200}]}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/tracks/[id=free]/levels/[id=1]/xp", "value": 200}]
+    /// ```
     #[test]
     fn schema_ref_items_should_use_nested_array_index_keys() {
         let schema = serde_json::json!({
@@ -1041,6 +1163,56 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// Index keys resolve through three levels of `$ref`ed item schemas.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"tracks": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/track"}}},
+    ///   "$defs": {
+    ///     "track": {
+    ///       "type": "object",
+    ///       "properties": {
+    ///         "id": {"type": "string"},
+    ///         "levels": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/level"}}
+    ///       }
+    ///     },
+    ///     "level": {
+    ///       "type": "object",
+    ///       "properties": {
+    ///         "id": {"type": "string"},
+    ///         "rewards": {"type": "array", "x-spatch-indexKey": "id", "items": {"$ref": "#/$defs/reward"}}
+    ///       }
+    ///     },
+    ///     "reward": {"type": "object", "properties": {"id": {"type": "string"}, "amount": {"type": "integer"}}}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {
+    ///   "tracks": [{"id": "free", "levels": [{"id": "1", "rewards": [{"id": "reward-1", "amount": 100}]}]}]
+    /// }
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {
+    ///   "tracks": [{"id": "free", "levels": [{"id": "1", "rewards": [{"id": "reward-1", "amount": 200}]}]}]
+    /// }
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [
+    ///   {
+    ///     "op": "replace",
+    ///     "path": "/tracks/[id=free]/levels/[id=1]/rewards/[id=reward-1]/amount",
+    ///     "value": 200
+    ///   }
+    /// ]
+    /// ```
     #[test]
     fn schema_ref_items_should_use_deeply_nested_array_index_keys() {
         let schema = serde_json::json!({
@@ -1119,6 +1291,35 @@ mod tests {
         check!(patch_ops == expected_patch);
     }
 
+    /// Integer index key values are accepted and rendered as `[id=1]`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {
+    ///     "levels": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "integer"}, "xp": {"type": "integer"}}}
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"levels": [{"id": 1, "xp": 100}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"levels": [{"id": 1, "xp": 200}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/levels/[id=1]/xp", "value": 200}]
+    /// ```
     #[test]
     fn schema_index_key_should_accept_numeric_values() {
         let schema = serde_json::json!({
@@ -1175,6 +1376,37 @@ mod tests {
     //     check!(patch_ops == expected_patch);
     // }
 
+    /// Removing a keyed item emits `remove` addressed by its key.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "remove", "path": "/foo/[id=bla]"}]
+    /// ```
     #[test]
     fn test_diff_recursive_with_schema_remove_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1197,6 +1429,37 @@ mod tests {
         check!(patch_ops[0] == expected_patch[0]);
     }
 
+    /// Adding a keyed item appends it with `-`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "add", "path": "/foo/-", "value": {"id": "bla", "count": 3}}]
+    /// ```
     #[test]
     fn test_diff_recursive_with_schema_add_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1222,6 +1485,37 @@ mod tests {
         check!(patch_ops[0] == expected_patch[0]);
     }
 
+    /// Changing a field of a keyed item replaces just that field.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 10}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/foo/[id=bla]/count", "value": 3}]
+    /// ```
     #[test]
     fn test_diff_recursive_with_schema_modify_array_element() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1248,6 +1542,40 @@ mod tests {
         check!(patch_ops[0] == expected_patch[0]);
     }
 
+    /// Negative case: items carry `key`, not the schema's index key `id`, so every item is reported.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"key": "abc", "count": 2}, {"key": "bla", "count": 10}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"key": "abc", "count": 2}, {"key": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /foo/0 is missing index key 'id'
+    /// left: Item /foo/1 is missing index key 'id'
+    /// right: Item /foo/0 is missing index key 'id'
+    /// right: Item /foo/1 is missing index key 'id'
+    /// ```
     #[test]
     fn diff_with_schema_and_not_matching_index_key_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1273,6 +1601,38 @@ mod tests {
         check!(diff_errors.right[1] == DiffError::missing_index_key(&path("/foo/1"), "id"));
     }
 
+    /// Negative case: two items share `id: "abc"`; the second is reported as a duplicate on both sides.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "abc", "count": 10}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "abc", "count": 3}]}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /foo/1 has duplicate index key 'id' with value 'abc'
+    /// right: Item /foo/1 has duplicate index key 'id' with value 'abc'
+    /// ```
     #[test]
     fn diff_with_schema_and_duplicate_index_key_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1298,6 +1658,52 @@ mod tests {
         );
     }
 
+    /// Negative case: object, array and null `id` values cannot form a semantic path.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {
+    ///   "foo": [
+    ///     {"id": {"nested": "object"}, "count": 2},
+    ///     {"id": ["array"], "count": 3},
+    ///     {"id": null, "count": 4}
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {
+    ///   "foo": [
+    ///     {"id": {"nested": "object"}, "count": 2},
+    ///     {"id": ["array"], "count": 3},
+    ///     {"id": null, "count": 4}
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /foo/0 has non-string index key: {"nested":"object"}
+    /// left: Item /foo/1 has non-string index key: ["array"]
+    /// left: Item /foo/2 has non-string index key: null
+    /// right: same three errors
+    /// ```
     #[test]
     fn diff_with_schema_and_unrepresentable_index_key_values_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1326,6 +1732,38 @@ mod tests {
         check!(diff_errors.right == expected_errors);
     }
 
+    /// Negative case: a keyed array holds strings, but keyed items must be objects.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"foo": ["left-only"]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": ["right-only"]}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Expected array items at path /foo to be objects for schema-aware diffing, but found string
+    /// right: Expected array items at path /foo to be objects for schema-aware diffing, but found string
+    /// ```
     #[test]
     fn diff_with_schema_and_non_object_array_items_should_fail() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1342,6 +1780,37 @@ mod tests {
         );
     }
 
+    /// Combines a keyed-item field change with removal of the root property `bar`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "properties": {
+    ///     "foo": {
+    ///       "type": "array",
+    ///       "x-spatch-indexKey": "id",
+    ///       "items": {"type": "object", "properties": {"id": {"type": "string"}, "count": {"type": "number"}}}
+    ///     },
+    ///     "bar": {"type": "number"}
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"bar": 1, "foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 3}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"foo": [{"id": "abc", "count": 2}, {"id": "bla", "count": 10}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/foo/[id=bla]/count", "value": 10}, {"op": "remove", "path": "/bar"}]
+    /// ```
     #[test]
     fn test_diff_recursive_with_both_objects_add_and_remove() {
         let schema: serde_json::Value = serde_json::from_str(SIMPLE_SCHEMA).unwrap();
@@ -1781,6 +2250,29 @@ mod tests {
         )
     }
 
+    /// A composite key yields a multi-pair filter segment `[region=eu,code=a1]`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1", "qty": 1}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1", "qty": 2}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/items/[region=eu,code=a1]/qty", "value": 2}]
+    /// ```
     #[test]
     fn composite_index_key_should_produce_multi_pair_filter_paths() {
         let left = serde_json::json!({"items": [{"region": "eu", "code": "a1", "qty": 1}]});
@@ -1798,6 +2290,32 @@ mod tests {
         );
     }
 
+    /// Items sharing only `region` are different identities: one removed, one added.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "b2"}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [
+    ///   {"op": "remove", "path": "/items/[region=eu,code=a1]"},
+    ///   {"op": "add", "path": "/items/-", "value": {"region": "eu", "code": "b2"}}
+    /// ]
+    /// ```
     #[test]
     fn composite_index_key_should_not_match_items_sharing_only_some_fields() {
         let left = serde_json::json!({"items": [{"region": "eu", "code": "a1"}]});
@@ -1818,6 +2336,29 @@ mod tests {
         );
     }
 
+    /// Reordering keyed items produces no ops.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1"}, {"region": "us", "code": "a1"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"region": "us", "code": "a1"}, {"region": "eu", "code": "a1"}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// []
+    /// ```
     #[test]
     fn composite_index_key_should_ignore_item_order() {
         let left = serde_json::json!({"items": [
@@ -1833,6 +2374,27 @@ mod tests {
         check!(patch.is_empty());
     }
 
+    /// A single string key still yields a single-pair `[id=a]` path.
+    ///
+    /// Schema:
+    /// ```json
+    /// {"properties": {"items": {"type": "array", "x-spatch-indexKey": "id", "items": {"type": "object"}}}}
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"id": "a", "qty": 1}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"id": "a", "qty": 2}]}
+    /// ```
+    ///
+    /// Expected patch:
+    /// ```json
+    /// [{"op": "replace", "path": "/items/[id=a]/qty", "value": 2}]
+    /// ```
     #[test]
     fn single_string_index_key_should_still_produce_single_pair_paths() {
         let schema = serde_json::json!({"properties": {"items": {
@@ -1859,6 +2421,29 @@ mod tests {
         );
     }
 
+    /// Negative case: the first item lacks `code`; the error names the missing field.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": []}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /items/0 is missing index key 'code'
+    /// ```
     #[test]
     fn composite_index_key_should_name_the_missing_field() {
         let left = serde_json::json!({"items": [{"region": "eu"}]});
@@ -1870,6 +2455,29 @@ mod tests {
         check!(errors.right.is_empty());
     }
 
+    /// Negative case: `code` is null, which cannot form a path; the error names the field.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": null}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": []}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /items/0 has non-string index key in field 'code': null
+    /// ```
     #[test]
     fn composite_index_key_should_name_the_field_with_an_unrepresentable_value() {
         let left = serde_json::json!({"items": [{"region": "eu", "code": null}]});
@@ -1891,6 +2499,29 @@ mod tests {
         );
     }
 
+    /// Negative case: two items share the same `region`+`code` combination.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "eu", "code": "a1"}, {"region": "eu", "code": "a1"}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": []}
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /items/1 has duplicate index key 'region,code' with value 'eu,a1'
+    /// ```
     #[test]
     fn composite_index_key_should_report_duplicate_combinations() {
         let left = serde_json::json!({"items": [
@@ -1910,6 +2541,23 @@ mod tests {
         );
     }
 
+    /// Negative case: an `x-spatch-indexKey` that is not a string or non-empty string array is rejected.
+    ///
+    /// Schema (run twice, with `"x-spatch-indexKey": []` and then `["id", 1]`):
+    /// ```json
+    /// {"properties": {"items": {"type": "array", "x-spatch-indexKey": [], "items": {"type": "object"}}}}
+    /// ```
+    ///
+    /// Left and right (identical):
+    /// ```json
+    /// {"items": [{"id": "a"}]}
+    /// ```
+    ///
+    /// Expected errors (both declarations, both sides):
+    /// ```text
+    /// left: Array at /items has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings
+    /// right: Array at /items has an invalid x-spatch-indexKey: expected a string or a non-empty array of strings
+    /// ```
     #[test]
     fn invalid_index_key_declarations_should_be_rejected() {
         for declaration in [serde_json::json!([]), serde_json::json!(["id", 1])] {
@@ -1925,6 +2573,31 @@ mod tests {
         }
     }
 
+    /// Composite paths with `=` and spaces in values survive JSON serialisation and apply to `left`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "properties": {"items": {"type": "array", "x-spatch-indexKey": ["region", "code"], "items": {"type": "object"}}}
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// {"items": [{"region": "a=b", "code": "x y", "qty": 1}, {"region": "eu", "code": "a1", "qty": 1}]}
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// {"items": [{"region": "a=b", "code": "x y", "qty": 2}, {"region": "eu", "code": "a1", "qty": 1}]}
+    /// ```
+    ///
+    /// Expected:
+    /// ```text
+    /// diff has no errors; the patch (qty 1 -> 2 on the `a=b` / `x y` item,
+    /// addressed by an escaped composite path) re-parses from its JSON form
+    /// and applies to `left`, yielding `right`
+    /// ```
     #[test]
     fn composite_paths_should_round_trip_through_the_parser_and_apply() {
         let left = serde_json::json!({"items": [
@@ -2165,6 +2838,40 @@ mod tests {
         })
     }
 
+    /// Myers still validates identity inside unchanged items (the first), like Positional.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "array",
+    ///   "items": {
+    ///     "type": "object",
+    ///     "properties": {
+    ///       "rows": {
+    ///         "type": "array",
+    ///         "x-spatch-indexKey": "id",
+    ///         "items": {"type": "object", "properties": {"id": {"type": "string"}}}
+    ///       }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// [{"rows": [{"x": 1}]}, 0]
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// [{"rows": [{"x": 1}]}, 1]
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// left: Item /0/rows/0 is missing index key 'id'
+    /// (Positional and Myers report identical errors)
+    /// ```
     #[test]
     fn myers_should_validate_identity_inside_equal_items() {
         let schema = unkeyed_items_with_keyed_field("rows");
@@ -2179,6 +2886,40 @@ mod tests {
         check!(myers == positional);
     }
 
+    /// After an earlier removal, a right-side error uses the item's index in `right`, not in `left`.
+    ///
+    /// Schema:
+    /// ```json
+    /// {
+    ///   "type": "array",
+    ///   "items": {
+    ///     "type": "object",
+    ///     "properties": {
+    ///       "inner": {
+    ///         "type": "array",
+    ///         "x-spatch-indexKey": "id",
+    ///         "items": {"type": "object", "properties": {"id": {"type": "string"}}}
+    ///       }
+    ///     }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Left:
+    /// ```json
+    /// [0, 1, {"inner": [{"id": "a"}]}]
+    /// ```
+    ///
+    /// Right:
+    /// ```json
+    /// [1, {"inner": [{}]}]
+    /// ```
+    ///
+    /// Expected errors:
+    /// ```text
+    /// right: Item /1/inner/0 is missing index key 'id'
+    /// (Positional pairs the item with `1` and reports nothing)
+    /// ```
     #[test]
     fn myers_should_report_right_errors_at_right_indices_after_edits() {
         let schema = unkeyed_items_with_keyed_field("inner");
