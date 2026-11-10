@@ -4,7 +4,7 @@ pub mod query;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use spatch::diff::DiffGranularity;
+use spatch::diff::{ArrayAlgorithm, DiffGranularity};
 
 #[derive(Debug, Parser)]
 #[command(name = "spatch", version, about)]
@@ -51,6 +51,27 @@ pub struct DiffArgs {
     /// `compact` may replace a whole object when that is smaller; `granular` keeps nested operations.
     #[arg(long, value_enum, default_value_t = Granularity::Compact)]
     pub granularity: Granularity,
+
+    /// Algorithm used to diff arrays without identity keys.
+    /// `positional` compares index by index; `myers` finds a minimal edit script.
+    #[arg(long, value_enum, default_value_t = CliArrayAlgorithm::Positional)]
+    pub array_algorithm: CliArrayAlgorithm,
+}
+
+/// CLI spelling of [`spatch::diff::ArrayAlgorithm`].
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum CliArrayAlgorithm {
+    Positional,
+    Myers,
+}
+
+impl From<CliArrayAlgorithm> for ArrayAlgorithm {
+    fn from(value: CliArrayAlgorithm) -> Self {
+        match value {
+            CliArrayAlgorithm::Positional => ArrayAlgorithm::Positional,
+            CliArrayAlgorithm::Myers => ArrayAlgorithm::Myers,
+        }
+    }
 }
 
 /// CLI spelling of [`spatch::diff::DiffGranularity`].

@@ -91,3 +91,31 @@ fn failing_diff_should_print_every_error_one_per_line_and_exit_1() {
     assert!(!stderr.contains("DiffErrorSummary"), "{stderr}");
     assert!(out.stdout.is_empty());
 }
+
+#[test]
+fn array_algorithm_flag_should_accept_positional_and_myers() {
+    let left = write_json("a-l.json", LEFT);
+    let right = write_json("a-r.json", RIGHT);
+
+    let default = diff(&left, &right, &[]);
+    let positional = diff(&left, &right, &["--array-algorithm", "positional"]);
+    let myers = diff(&left, &right, &["--array-algorithm", "myers"]);
+
+    assert!(positional.status.success() && myers.status.success());
+    assert_eq!(stdout(&default), stdout(&positional));
+}
+
+#[test]
+fn invalid_array_algorithm_should_be_rejected_with_the_accepted_values() {
+    let left = write_json("ai-l.json", LEFT);
+    let right = write_json("ai-r.json", RIGHT);
+
+    let out = diff(&left, &right, &["--array-algorithm", "bogus"]);
+
+    let stderr = stderr(&out);
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains("positional") && stderr.contains("myers"),
+        "{stderr}"
+    );
+}

@@ -1,12 +1,19 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    ops::Range,
+};
 
 use serde_json::Value;
+use similar::{
+    DiffOp, DiffTag,
+    algorithms::{Capture, Replace, myers},
+};
 
 use crate::{
     diff::{
         DiffOptions,
         error::{DiffError, DiffErrorSummary},
-        options::DiffGranularity,
+        options::{ArrayAlgorithm, DiffGranularity},
     },
     path::Spath,
 };
@@ -313,7 +320,162 @@ fn index_key_value_to_filter(value: &Value) -> Option<String> {
     }
 }
 
+/// Path of the array element at `index` under `array_path`.
+fn item_path(array_path: &Spath, index: usize) -> Spath {
+    array_path.push(crate::path::Segment::Field(index.to_string()))
+}
+
+/// Single-op patch removing the array element at `path`.
+fn remove_at(path: Spath) -> Patch {
+    Patch::new_with_op(super::PatchOp::remove(path))
+}
+
+/// Single-op patch adding `value` at `path` (`-` appends).
+fn add_at(path: Spath, value: &Value) -> Patch {
+    Patch::new_with_op(super::PatchOp::add(path, value.clone()))
+}
+
+/// Diffs two arrays, dispatching on [`DiffOptions::array_algorithm`].
 fn diff_array_indexed(
+    left_array: &[Value],
+    right_array: &[Value],
+    options: DiffOptions,
+    path_pointer: &Spath,
+    patch_ops: &Patch,
+) -> (Patch, DiffErrorSummary) {
+    match options.array_algorithm {
+        ArrayAlgorithm::Positional => {
+            diff_array_indexed_legacy(left_array, right_array, options, path_pointer, patch_ops)
+        }
+        ArrayAlgorithm::Myers => {
+            diff_array_indexed_myers(left_array, right_array, options, path_pointer, patch_ops)
+        }
+    }
+}
+
+/// Myers array diff: aligns `left` and `right` on their longest common
+/// subsequence, then turns each edit hunk into patch ops via [`hunk_patch`].
+///
+/// Hunks are emitted right to left, so every index refers to the original
+/// `left` array and removals come out in descending order (RFC 6902 safe).
+fn diff_array_indexed_myers(
+    left_array: &[Value],
+    right_array: &[Value],
+    options: DiffOptions,
+    path_pointer: &Spath,
+    patch_ops: &Patch,
+) -> (Patch, DiffErrorSummary) {
+    let item_options = items_options(options);
+    diff_ops(left_array, right_array)
+        .iter()
+        .rev()
+        .filter(|op| op.tag() != DiffTag::Equal)
+        .map(|hunk| {
+            hunk_patch(
+                hunk,
+                left_array,
+                right_array,
+                item_options,
+                path_pointer,
+                patch_ops,
+            )
+        })
+        .fold((Patch::default(), DiffErrorSummary::empty()), |acc, p| {
+            (acc.0 + p.0, acc.1 + p.1)
+        })
+}
+
+/// Myers diff ops of `left` -> `right`, left to right. Adjacent delete +
+/// insert are merged into one `Replace`, so non-`Equal` ops are hunks.
+// ponytail: plain `diff`, no wall-clock deadline, so output is deterministic;
+// cost O(ND) time. Switch to `myers::diff_deadline` if huge arrays with many
+// edits show up (past the deadline it degrades to a valid, non-minimal
+// delete + insert, i.e. output would depend on machine speed).
+fn diff_ops(left: &[Value], right: &[Value]) -> Vec<DiffOp> {
+    let mut hook = Replace::new(Capture::new());
+    let Ok(()) = myers::diff(&mut hook, left, 0..left.len(), right, 0..right.len());
+    hook.into_inner().into_ops()
+}
+
+/// Patch for one hunk: the first `min(deleted, inserted)` elements are paired
+/// positionally and diffed recursively; the rest become removes or adds.
+/// Leftovers (higher indices) are emitted before the paired diffs.
+fn hunk_patch(
+    hunk: &DiffOp,
+    left: &[Value],
+    right: &[Value],
+    item_options: DiffOptions,
+    path_pointer: &Spath,
+    patch_ops: &Patch,
+) -> (Patch, DiffErrorSummary) {
+    let (old, new) = (hunk.old_range(), hunk.new_range());
+    let paired = old.len().min(new.len());
+    let leftovers = leftover_patch(
+        left.len(),
+        old.start + paired..old.end,
+        &right[new.start + paired..new.end],
+        path_pointer,
+    );
+    let recursed = (0..paired)
+        .map(|i| {
+            diff_recursive(
+                &left[old.start + i],
+                &right[new.start + i],
+                item_options,
+                &item_path(path_pointer, old.start + i),
+                patch_ops,
+            )
+        })
+        .fold((Patch::default(), DiffErrorSummary::empty()), |acc, p| {
+            (acc.0 + p.0, acc.1 + p.1)
+        });
+    (leftovers + recursed.0, recursed.1)
+}
+
+/// Unpaired part of a hunk: removes `removed` (descending), or inserts
+/// `inserted` at `removed.start`. Inserts at the end of `left` (`len_left`)
+/// use `-` in order; elsewhere they go to the same index in reverse order.
+fn leftover_patch(
+    len_left: usize,
+    removed: Range<usize>,
+    inserted: &[Value],
+    path_pointer: &Spath,
+) -> Patch {
+    let removals = removed.clone().rev().fold(Patch::default(), |acc, i| {
+        acc + remove_at(item_path(path_pointer, i))
+    });
+    let additions = if removed.start == len_left {
+        let append = append_path(path_pointer);
+        inserted
+            .iter()
+            .fold(Patch::default(), |acc, el| acc + add_at(append.clone(), el))
+    } else {
+        let at = item_path(path_pointer, removed.start);
+        inserted
+            .iter()
+            .rev()
+            .fold(Patch::default(), |acc, el| acc + add_at(at.clone(), el))
+    };
+    removals + additions
+}
+
+/// Options for array items: the `items` schema when present, else no schema.
+fn items_options(options: DiffOptions) -> DiffOptions {
+    match options.items_schema() {
+        Some(sub_schema) => options.with_optional_schema(Some(sub_schema)),
+        None => options.without_schema(),
+    }
+}
+
+/// Path of the JSON Patch end-of-array marker (`-`) under `array_path`.
+fn append_path(array_path: &Spath) -> Spath {
+    array_path.push(crate::path::Segment::Field("-".to_owned()))
+}
+
+/// Legacy positional array diff: four deterministic fast paths (truncate,
+/// remove-from-front, append, add-to-front), then an index-by-index
+/// recursive fallback with trailing removals/additions.
+fn diff_array_indexed_legacy(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,
@@ -323,26 +485,18 @@ fn diff_array_indexed(
     let len_left = left_array.len();
     let len_right = right_array.len();
 
-    let item_options = if let Some(sub_schema) = options.items_schema() {
-        options.with_optional_schema(Some(sub_schema))
-    } else {
-        options.without_schema()
-    };
-
-    // --------
-    // Fast paths (deterministic, human-friendly)
-    // --------
+    let item_options = items_options(options);
 
     // 1) Pure truncate from the end: right is a prefix of left
     // left:  [a,b,c]
     // right: [a,b]
     if len_right <= len_left && left_array[..len_right] == *right_array {
         // remove from the end, descending indexes
-        let mut patch = Patch::default();
-        for i in (len_right..len_left).rev() {
-            let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
-            patch = patch + Patch::new_with_op(super::PatchOp::remove(child_path));
-        }
+        let patch = (len_right..len_left)
+            .rev()
+            .fold(Patch::default(), |acc, i| {
+                acc + remove_at(item_path(path_pointer, i))
+            });
         return (patch, DiffErrorSummary::empty());
     }
 
@@ -351,11 +505,9 @@ fn diff_array_indexed(
     // right: [b,c]
     if len_right <= len_left && left_array[len_left - len_right..] == *right_array {
         // remove index 0 repeatedly
-        let mut patch = Patch::default();
-        for _ in 0..(len_left - len_right) {
-            let child_path = path_pointer.push(crate::path::Segment::Field("0".to_owned()));
-            patch = patch + Patch::new_with_op(super::PatchOp::remove(child_path));
-        }
+        let patch = (0..(len_left - len_right)).fold(Patch::default(), |acc, _| {
+            acc + remove_at(item_path(path_pointer, 0))
+        });
         return (patch, DiffErrorSummary::empty());
     }
 
@@ -363,11 +515,12 @@ fn diff_array_indexed(
     // left:  [a,b]
     // right: [a,b,c]
     if len_left <= len_right && right_array[..len_left] == *left_array {
-        let mut patch = Patch::default();
-        for el in &right_array[len_left..] {
-            let child_path = path_pointer.push(crate::path::Segment::Field("-".to_owned()));
-            patch = patch + Patch::new_with_op(super::PatchOp::add(child_path, el.clone()));
-        }
+        let append_path = append_path(path_pointer);
+        let patch = right_array[len_left..]
+            .iter()
+            .fold(Patch::default(), |acc, el| {
+                acc + add_at(append_path.clone(), el)
+            });
         return (patch, DiffErrorSummary::empty());
     }
 
@@ -375,32 +528,28 @@ fn diff_array_indexed(
     // left:  [b,c]
     // right: [a,b,c]
     //
-    // JSON Patch has no "insert at front" primitive; it’s still `add /arr/0`.
+    // JSON Patch has no "insert at front" primitive; it's still `add /arr/0`.
+    // Inserting multiple at index 0 is done in reverse so final order is correct.
     if len_left <= len_right && right_array[len_right - len_left..] == *left_array {
-        let mut patch = Patch::default();
-        // add to front in increasing order so final order matches `right`
-        for el in right_array[..(len_right - len_left)].iter().rev() {
-            // inserting multiple at index 0: do it in reverse so final order is correct
-            let child_path = path_pointer.push(crate::path::Segment::Field("0".to_owned()));
-            patch = patch + Patch::new_with_op(super::PatchOp::add(child_path, el.clone()));
-        }
+        let patch = right_array[..(len_right - len_left)]
+            .iter()
+            .rev()
+            .fold(Patch::default(), |acc, el| {
+                acc + add_at(item_path(path_pointer, 0), el)
+            });
         return (patch, DiffErrorSummary::empty());
     }
 
-    // --------
-    // Fallback:
-    // --------
-
+    // Fallback: recurse index by index.
     let min_len = len_left.min(len_right);
 
     let recursed = (0..min_len)
         .map(|i| {
-            let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
             diff_recursive(
                 &left_array[i],
                 &right_array[i],
                 item_options,
-                &child_path,
+                &item_path(path_pointer, i),
                 patch_ops,
             )
         })
@@ -410,26 +559,19 @@ fn diff_array_indexed(
 
     // Extra elements in left_array (removals)
     // IMPORTANT: remove from end to avoid index shifting
-    let removals = (min_len..len_left)
-        .rev()
-        .map(|i| {
-            let child_path = path_pointer.push(crate::path::Segment::Field(i.to_string()));
-            Patch::new_with_op(super::PatchOp::remove(child_path))
-        })
-        .fold(Patch::default(), |acc, p| acc + p);
+    let removals = (min_len..len_left).rev().fold(Patch::default(), |acc, i| {
+        acc + remove_at(item_path(path_pointer, i))
+    });
 
     // Extra elements in right_array (additions)
+    let append_path = append_path(path_pointer);
     let additions = right_array[min_len..]
         .iter()
-        .map(|element| {
-            let child_path = path_pointer.push(crate::path::Segment::Field("-".to_owned()));
-            Patch::new_with_op(super::PatchOp::add(child_path, element.clone()))
-        })
-        .fold(Patch::default(), |acc, p| acc + p);
+        .fold(Patch::default(), |acc, el| {
+            acc + add_at(append_path.clone(), el)
+        });
 
-    let patch = recursed.0 + removals + additions;
-    let diff_errors = recursed.1;
-    (patch, diff_errors)
+    (recursed.0 + removals + additions, recursed.1)
 }
 
 #[cfg(test)]
@@ -1511,6 +1653,42 @@ mod tests {
         check!(patch_ops.len() == 2);
         check!(patch_ops == expected_patch);
     }
+
+    #[test]
+    fn diff_array_indexed_should_handle_pure_remove_from_middle() {
+        let left = serde_json::json!({"thresholds": [
+            {"duration": 0},
+            {"duration": 360},
+            {"duration": 360},
+            {"duration": 600},
+            {"duration": 1800},
+            {"duration": 3600},
+        ]});
+        let right = serde_json::json!({"thresholds": [
+            {"duration": 0},
+            {"duration": 360},
+            {"duration": 600},
+            {"duration": 1800},
+            {"duration": 3600},
+        ]});
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new()
+                .with_granularity(DiffGranularity::Granular)
+                .with_array_algorithm(ArrayAlgorithm::Myers),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![PatchOp::remove(path("/thresholds/2"))]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops.len() == 1);
+        check!(patch_ops == expected_patch);
+    }
+
     /// Schema with `items` keyed by the composite `["region", "code"]`.
     fn composite_schema() -> serde_json::Value {
         serde_json::json!({
@@ -1699,5 +1877,198 @@ mod tests {
         let reparsed: Vec<PatchOp> =
             serde_json::from_str(&serde_json::to_string(&patch).unwrap()).unwrap();
         check!(crate::patch::apply(&left, &reparsed).unwrap() == right);
+    }
+
+    /// Diffs with Myers + `granularity`, asserts no errors and that the patch
+    /// applies to `left` yielding `right`.
+    fn myers_diff_with(left: &Value, right: &Value, granularity: DiffGranularity) -> Patch {
+        let options = DiffOptions::new()
+            .with_granularity(granularity)
+            .with_array_algorithm(ArrayAlgorithm::Myers);
+        let (patch, errors) =
+            diff_recursive(left, right, options, &Spath::default(), &Patch::default());
+        check!(errors.is_empty());
+        check!(crate::patch::apply(left, &patch).unwrap() == *right);
+        patch
+    }
+
+    /// [`myers_diff_with`] using `Granular`.
+    fn myers_diff(left: &Value, right: &Value) -> Patch {
+        myers_diff_with(left, right, DiffGranularity::Granular)
+    }
+
+    /// Legacy (default) diff of `left` against `right`.
+    fn legacy_diff(left: &Value, right: &Value) -> Patch {
+        diff_recursive(
+            left,
+            right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        )
+        .0
+    }
+
+    /// Wraps durations as `{"thresholds": [{"duration": n}, ..]}`.
+    fn thresholds(durations: &[u64]) -> Value {
+        let items: Vec<Value> = durations
+            .iter()
+            .map(|d| serde_json::json!({ "duration": d }))
+            .collect();
+        serde_json::json!({ "thresholds": items })
+    }
+
+    #[test]
+    fn myers_should_remove_from_middle_in_compact_too() {
+        let left = thresholds(&[0, 360, 360, 600, 1800, 3600]);
+        let right = thresholds(&[0, 360, 600, 1800, 3600]);
+
+        let patch = myers_diff_with(&left, &right, DiffGranularity::Compact);
+
+        check!(patch == Patch::new(vec![PatchOp::remove(path("/thresholds/2"))]));
+    }
+
+    #[test]
+    fn myers_should_emit_two_separate_inserts() {
+        let left = thresholds(&[0, 360, 600, 1800, 3600]);
+        let right = thresholds(&[0, 360, 360, 600, 1800, 1800, 3600]);
+
+        let patch = myers_diff(&left, &right);
+
+        check!(
+            patch
+                == Patch::new(vec![
+                    PatchOp::add(path("/thresholds/3"), serde_json::json!({"duration": 1800})),
+                    PatchOp::add(path("/thresholds/2"), serde_json::json!({"duration": 360})),
+                ])
+        );
+    }
+
+    #[test]
+    fn myers_should_handle_duplicates() {
+        let left = serde_json::json!(["a", "a", "a"]);
+
+        check!(
+            myers_diff(&left, &serde_json::json!(["a", "a"]))
+                == Patch::new(vec![PatchOp::remove(path("/2"))])
+        );
+        check!(
+            myers_diff(&left, &serde_json::json!(["a", "a", "a", "a"]))
+                == Patch::new(vec![PatchOp::add(path("/-"), serde_json::json!("a"))])
+        );
+    }
+
+    #[test]
+    fn myers_should_match_legacy_for_pure_append_prepend_truncate() {
+        let cases = [
+            (
+                serde_json::json!(["a", "b"]),
+                serde_json::json!(["a", "b", "c", "d"]),
+            ),
+            (
+                serde_json::json!(["c", "d"]),
+                serde_json::json!(["a", "b", "c", "d"]),
+            ),
+            (
+                serde_json::json!(["a", "b", "c", "d"]),
+                serde_json::json!(["a", "b"]),
+            ),
+        ];
+        for (left, right) in &cases {
+            check!(myers_diff(left, right) == legacy_diff(left, right));
+        }
+    }
+
+    #[test]
+    fn myers_should_remove_from_front_in_descending_order() {
+        let patch = myers_diff(
+            &serde_json::json!(["a", "b", "c", "d"]),
+            &serde_json::json!(["c", "d"]),
+        );
+
+        check!(
+            patch
+                == Patch::new(vec![
+                    PatchOp::remove(path("/1")),
+                    PatchOp::remove(path("/0")),
+                ])
+        );
+    }
+
+    #[test]
+    fn myers_should_remove_several_from_middle_in_descending_order() {
+        let patch = myers_diff(
+            &serde_json::json!(["a", "b", "c", "d", "e"]),
+            &serde_json::json!(["a", "e"]),
+        );
+
+        check!(
+            patch
+                == Patch::new(vec![
+                    PatchOp::remove(path("/3")),
+                    PatchOp::remove(path("/2")),
+                    PatchOp::remove(path("/1")),
+                ])
+        );
+    }
+
+    #[test]
+    fn myers_should_replace_field_of_changed_element_between_equals() {
+        let patch = myers_diff(
+            &serde_json::json!([{"d": 1}, {"d": 2}, {"d": 3}]),
+            &serde_json::json!([{"d": 1}, {"d": 9}, {"d": 3}]),
+        );
+
+        check!(patch == Patch::new(vec![PatchOp::replace(path("/1/d"), serde_json::json!(9))]));
+    }
+
+    #[test]
+    fn myers_should_propagate_to_nested_arrays() {
+        let patch = myers_diff(
+            &serde_json::json!({"a": [[1, 2, 2, 3]]}),
+            &serde_json::json!({"a": [[1, 2, 3]]}),
+        );
+
+        check!(patch == Patch::new(vec![PatchOp::remove(path("/a/0/2"))]));
+    }
+
+    #[test]
+    fn both_algorithms_should_yield_right_when_applied() {
+        let cases = [
+            (
+                thresholds(&[0, 360, 360, 600, 1800, 3600]),
+                thresholds(&[0, 360, 600, 1800, 3600]),
+            ),
+            (
+                thresholds(&[0, 360, 600, 1800, 3600]),
+                thresholds(&[0, 360, 360, 600, 1800, 1800, 3600]),
+            ),
+            (
+                serde_json::json!(["a", "b", "c"]),
+                serde_json::json!(["a", "x", "c", "d"]),
+            ),
+            (
+                serde_json::json!(["a", "b", "c", "d"]),
+                serde_json::json!(["c", "d"]),
+            ),
+            (
+                serde_json::json!(["c", "d"]),
+                serde_json::json!(["a", "b", "c", "d"]),
+            ),
+            (
+                serde_json::json!(["a", "b", "c", "d", "e"]),
+                serde_json::json!(["x", "c", "y", "z"]),
+            ),
+            (serde_json::json!([1, 2, 3]), serde_json::json!([])),
+            (serde_json::json!([]), serde_json::json!([1, 2, 3])),
+            (
+                serde_json::json!({"a": [[1, 2, 2, 3], [4]]}),
+                serde_json::json!({"a": [[0, 1, 3], [4, 4]]}),
+            ),
+        ];
+        for (left, right) in &cases {
+            check!(crate::patch::apply(left, &legacy_diff(left, right)).unwrap() == *right);
+            myers_diff(left, right);
+        }
     }
 }
