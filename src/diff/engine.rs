@@ -24,56 +24,79 @@ use super::Patch;
 /// It's used to identify unique items in an array for diffing purposes.
 pub(super) const HASH_KEY_PROP_NAME: &str = "x-spatch-indexKey";
 
-/// Where a pair of values sits in each input document.
+/// Where a pair of aligned values sits in each input document.
 ///
-/// `patch` is the path in the left document: patch ops are applied to it, so it
-/// must always be left-indexed (RFC 6902). `right` is the path in the right
-/// document and is only used to report right-input diagnostics. The two differ
-/// once an array diff aligns `left[i]` with `right[j]` for `i != j`.
+/// `left` is the path in the left document. Patch ops are applied to the left
+/// document, so every op path must come from `left` (RFC 6902).
+/// `right` is the path in the right document. It is only used to report
+/// errors found in the right input, so they point at a real location there.
+///
+/// The two differ once an array diff aligns `left[i]` with `right[j]` for
+/// `i != j`. Example: diffing `[0, 1, {"inner": [{}]}]` against
+/// `[1, {"inner": [{}]}]`, the object is `left[2]` and `right[1]`:
+///
+/// ```text
+/// location.left  = /2/inner/0   (a patch op for this item targets this path)
+/// location.right = /1/inner/0   (a missing-key error in the right input is reported here)
+/// ```
 #[derive(Debug, Default, Clone)]
-struct Paths {
-    patch: Spath,
+struct Location {
+    left: Spath,
     right: Spath,
 }
 
-impl Paths {
-    /// Both documents are at `path`.
-    fn at(path: &Spath) -> Self {
-        Paths {
-            patch: path.clone(),
+impl Location {
+    /// Both documents have the value at `path`.
+    ///
+    /// Example: `Location::both(&"/a".try_into()?)` gives `left = /a`, `right = /a`.
+    fn both(path: &Spath) -> Self {
+        Location {
+            left: path.clone(),
             right: path.clone(),
         }
     }
 
     /// Appends `segment` to both paths.
+    ///
+    /// Example: `{left: /a, right: /b}.push(Field("c"))` gives `{left: /a/c, right: /b/c}`.
     fn push(&self, segment: crate::path::Segment) -> Self {
-        Paths {
-            patch: self.patch.push(segment.clone()),
+        Location {
+            left: self.left.push(segment.clone()),
             right: self.right.push(segment),
         }
     }
 
-    /// Appends the same filter segment to both paths.
+    /// Appends the same filter segment (e.g. `[id=a]`) to both paths.
+    ///
+    /// Example: `{left: /rows, right: /rows}.push_filters([("id", "a")])` gives
+    /// `{left: /rows[id=a], right: /rows[id=a]}`.
     fn push_filters<'a>(
         &self,
         pairs: impl IntoIterator<Item = (&'a str, &'a str)> + Clone,
     ) -> Self {
-        Paths {
-            patch: self.patch.push_filters(pairs.clone()),
+        Location {
+            left: self.left.push_filters(pairs.clone()),
             right: self.right.push_filters(pairs),
         }
     }
 
-    /// Descends into `left[left_index]` / `right[right_index]` of an array.
-    fn item(&self, left_index: usize, right_index: usize) -> Self {
-        Paths {
-            patch: item_path(&self.patch, left_index),
+    /// Descends into `left[left_index]` and `right[right_index]` of an array.
+    ///
+    /// Example: `{left: /t, right: /t}.array_item(2, 1)` gives
+    /// `{left: /t/2, right: /t/1}`: the item at index 2 on the left was aligned
+    /// with the item at index 1 on the right.
+    fn array_item(&self, left_index: usize, right_index: usize) -> Self {
+        Location {
+            left: item_path(&self.left, left_index),
             right: item_path(&self.right, right_index),
         }
     }
 }
 
 /// Diffs `left` against `right`, both located at `path_pos` in their documents.
+///
+/// Example: for left `{"a": 1}` and right `{"a": 2}` at the root, the result
+/// is the single op `replace /a 2`.
 pub(super) fn diff_recursive(
     left: &serde_json::Value,
     right: &serde_json::Value,
@@ -81,27 +104,31 @@ pub(super) fn diff_recursive(
     path_pos: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
-    diff_at(left, right, options, &Paths::at(path_pos), patch_ops)
+    diff_at(left, right, options, &Location::both(path_pos), patch_ops)
 }
 
-/// Like [`diff_recursive`], with separate left and right locations.
+/// Like [`diff_recursive`], but the two values may sit at different paths.
+///
+/// Patch ops use `location.left`; errors for the right input use
+/// `location.right`. Example: for `left[2]` aligned with `right[1]`, an op is
+/// `replace /t/2/x ..` while a right-side error is reported at `/t/1/x`.
 fn diff_at(
     left: &serde_json::Value,
     right: &serde_json::Value,
     options: DiffOptions,
-    paths: &Paths,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     match (left, right) {
         (Value::Object(left_map), Value::Object(right_map)) => {
-            diff_object(left_map, right_map, options, paths, patch_ops)
+            diff_object(left_map, right_map, options, location, patch_ops)
         }
         (Value::Array(left_array), Value::Array(right_array)) => {
-            diff_array(left_array, right_array, options, paths, patch_ops)
+            diff_array(left_array, right_array, options, location, patch_ops)
         }
         (left, right) if left == right => (Patch::default(), DiffErrorSummary::empty()), // Values are equal, no diff needed
         (_, right) => {
-            let patch = super::PatchOp::replace(paths.patch.clone(), right.clone());
+            let patch = super::PatchOp::replace(location.left.clone(), right.clone());
             // patch_ops.push(patch.clone());
 
             (Patch::new(vec![patch]), DiffErrorSummary::empty())
@@ -113,7 +140,7 @@ fn diff_object(
     left_map: &serde_json::Map<String, Value>,
     right_map: &serde_json::Map<String, Value>,
     options: DiffOptions,
-    paths: &Paths,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     let inner_patch = right_map
@@ -125,18 +152,18 @@ fn diff_object(
                 Some(left_value) => {
                     let child_options = options.with_optional_schema(sub_schema);
 
-                    let child_paths = paths.push(crate::path::Segment::Field(key.clone()));
+                    let child_location = location.push(crate::path::Segment::Field(key.clone()));
                     diff_at(
                         left_value,
                         right_value,
                         child_options,
-                        &child_paths,
+                        &child_location,
                         patch_ops,
                     )
                 }
                 // Otherwise, it's an addition
                 None => {
-                    let child_path = paths.patch.push(crate::path::Segment::Field(key.clone()));
+                    let child_path = location.left.push(crate::path::Segment::Field(key.clone()));
                     let patch_op = super::PatchOp::add(child_path.clone(), right_value.clone());
 
                     (Patch::new(vec![patch_op]), DiffErrorSummary::empty())
@@ -151,7 +178,7 @@ fn diff_object(
     for key in left_map.keys() {
         // If the key is missing in the right map, it's a removal
         if !right_map.contains_key(key) {
-            let child_path = paths.patch.push(crate::path::Segment::Field(key.clone()));
+            let child_path = location.left.push(crate::path::Segment::Field(key.clone()));
             let child_op = super::PatchOp::remove(child_path.clone());
             removals.push(child_op);
         }
@@ -159,7 +186,7 @@ fn diff_object(
 
     let replace_patch = {
         let patch_op =
-            super::PatchOp::replace(paths.patch.clone(), Value::Object(right_map.clone()));
+            super::PatchOp::replace(location.left.clone(), Value::Object(right_map.clone()));
         Patch::new(vec![patch_op])
     };
 
@@ -207,23 +234,23 @@ fn diff_array(
     left: &[Value],
     right: &[Value],
     options: DiffOptions<'_>,
-    paths: &Paths,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     // TODO: emit warning if the schema is missing an index key when the schema is provided
     match options.index_keys() {
         // If the schema specifies an index key, use keyed diffing
-        Some(Ok(keys)) => diff_array_keyed(left, right, &keys, options, paths, patch_ops),
+        Some(Ok(keys)) => diff_array_keyed(left, right, &keys, options, location, patch_ops),
         // A malformed declaration is a schema error; report it for both inputs.
         Some(Err(())) => (
             Patch::default(),
             DiffErrorSummary::new(
-                vec![DiffError::invalid_index_key_declaration(&paths.patch)],
-                vec![DiffError::invalid_index_key_declaration(&paths.right)],
+                vec![DiffError::invalid_index_key_declaration(&location.left)],
+                vec![DiffError::invalid_index_key_declaration(&location.right)],
             ),
         ),
         // Otherwise, use index based diffing
-        None => diff_array_indexed(left, right, options, paths, patch_ops),
+        None => diff_array_indexed(left, right, options, location, patch_ops),
     }
 }
 
@@ -242,12 +269,12 @@ fn diff_array_keyed(
     right: &[Value],
     index_keys: &[&str],
     options: DiffOptions,
-    paths: &Paths,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     // Build maps: composite identity (one value per index key field) -> element
-    let (map_left, errors_left) = build_key_map(left, index_keys, &paths.patch);
-    let (map_right, errors_right) = build_key_map(right, index_keys, &paths.right);
+    let (map_left, errors_left) = build_key_map(left, index_keys, &location.left);
+    let (map_right, errors_right) = build_key_map(right, index_keys, &location.right);
 
     let keys_a: HashSet<_> = map_left.keys().cloned().collect();
     let keys_b: HashSet<_> = map_right.keys().cloned().collect();
@@ -265,7 +292,7 @@ fn diff_array_keyed(
     let removed = removed_keys
         .into_iter()
         .map(|key| {
-            let child_path = paths.patch.push_filters(filter_pairs(index_keys, key));
+            let child_path = location.left.push_filters(filter_pairs(index_keys, key));
             Patch::new_with_op(super::PatchOp::remove(child_path.clone()))
         })
         .fold(Patch::default(), |acc, p| acc + p);
@@ -274,8 +301,8 @@ fn diff_array_keyed(
     let added = added_keys
         .into_iter()
         .map(|key| {
-            let child_path = paths
-                .patch
+            let child_path = location
+                .left
                 .push(crate::path::Segment::Field("-".to_string()));
             let val = &map_right[key];
 
@@ -290,7 +317,7 @@ fn diff_array_keyed(
     let modified = modified_keys
         .into_iter()
         .map(|key| {
-            let child_paths = paths.push_filters(filter_pairs(index_keys, key));
+            let child_location = location.push_filters(filter_pairs(index_keys, key));
             let value_left = &map_left[key];
             let value_right = &map_right[key];
 
@@ -298,7 +325,7 @@ fn diff_array_keyed(
                 value_left,
                 value_right,
                 child_options,
-                &child_paths,
+                &child_location,
                 patch_ops,
             )
         })
@@ -403,15 +430,15 @@ fn diff_array_indexed(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,
-    paths: &Paths,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     match options.array_algorithm {
         ArrayAlgorithm::Positional => {
-            diff_array_indexed_legacy(left_array, right_array, options, paths, patch_ops)
+            diff_array_indexed_legacy(left_array, right_array, options, location, patch_ops)
         }
         ArrayAlgorithm::Myers => {
-            diff_array_indexed_myers(left_array, right_array, options, paths, patch_ops)
+            diff_array_indexed_myers(left_array, right_array, options, location, patch_ops)
         }
     }
 }
@@ -425,7 +452,7 @@ fn diff_array_indexed_myers(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,
-    paths: &Paths,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     let item_options = items_options(options);
@@ -440,7 +467,7 @@ fn diff_array_indexed_myers(
                 left_array,
                 right_array,
                 item_options,
-                paths,
+                location,
                 patch_ops,
             )
         })
@@ -469,7 +496,7 @@ fn hunk_patch(
     left: &[Value],
     right: &[Value],
     item_options: DiffOptions,
-    paths: &Paths,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
     let (old, new) = (hunk.old_range(), hunk.new_range());
@@ -478,7 +505,7 @@ fn hunk_patch(
         left.len(),
         old.start + paired..old.end,
         &right[new.start + paired..new.end],
-        &paths.patch,
+        &location.left,
     );
     let recursed = (0..paired)
         .map(|i| {
@@ -486,7 +513,7 @@ fn hunk_patch(
                 &left[old.start + i],
                 &right[new.start + i],
                 item_options,
-                &paths.item(old.start + i, new.start + i),
+                &location.array_item(old.start + i, new.start + i),
                 patch_ops,
             )
         })
@@ -543,10 +570,10 @@ fn diff_array_indexed_legacy(
     left_array: &[Value],
     right_array: &[Value],
     options: DiffOptions,
-    paths: &Paths,
+    location: &Location,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
-    let path_pointer = &paths.patch;
+    let path_pointer = &location.left;
     let len_left = left_array.len();
     let len_right = right_array.len();
 
@@ -614,7 +641,7 @@ fn diff_array_indexed_legacy(
                 &left_array[i],
                 &right_array[i],
                 item_options,
-                &paths.item(i, i),
+                &location.array_item(i, i),
                 patch_ops,
             )
         })
