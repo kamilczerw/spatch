@@ -1,6 +1,13 @@
-use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::{
+    collections::{HashMap, HashSet, hash_map::Entry},
+    ops::Range,
+};
 
 use serde_json::Value;
+use similar::{
+    DiffOp, DiffTag,
+    algorithms::{Capture, Replace, myers},
+};
 
 use crate::{
     diff::{
@@ -346,9 +353,11 @@ fn diff_array_indexed(
     }
 }
 
-/// Myers array diff.
-// ponytail: stub delegating to legacy; real implementation is phase 4.
-// TODO(phase 4): replace with the Myers-based diff.
+/// Myers array diff: aligns `left` and `right` on their longest common
+/// subsequence, then turns each edit hunk into patch ops via [`hunk_patch`].
+///
+/// Hunks are emitted right to left, so every index refers to the original
+/// `left` array and removals come out in descending order (RFC 6902 safe).
 fn diff_array_indexed_myers(
     left_array: &[Value],
     right_array: &[Value],
@@ -356,7 +365,98 @@ fn diff_array_indexed_myers(
     path_pointer: &Spath,
     patch_ops: &Patch,
 ) -> (Patch, DiffErrorSummary) {
-    diff_array_indexed_legacy(left_array, right_array, options, path_pointer, patch_ops)
+    let item_options = items_options(options);
+    diff_ops(left_array, right_array)
+        .iter()
+        .rev()
+        .filter(|op| op.tag() != DiffTag::Equal)
+        .map(|hunk| {
+            hunk_patch(
+                hunk,
+                left_array,
+                right_array,
+                item_options,
+                path_pointer,
+                patch_ops,
+            )
+        })
+        .fold((Patch::default(), DiffErrorSummary::empty()), |acc, p| {
+            (acc.0 + p.0, acc.1 + p.1)
+        })
+}
+
+/// Myers diff ops of `left` -> `right`, left to right. Adjacent delete +
+/// insert are merged into one `Replace`, so non-`Equal` ops are hunks.
+// ponytail: plain `diff`, no wall-clock deadline, so output is deterministic;
+// cost O(ND) time. Switch to `myers::diff_deadline` if huge arrays with many
+// edits show up (past the deadline it degrades to a valid, non-minimal
+// delete + insert, i.e. output would depend on machine speed).
+fn diff_ops(left: &[Value], right: &[Value]) -> Vec<DiffOp> {
+    let mut hook = Replace::new(Capture::new());
+    let Ok(()) = myers::diff(&mut hook, left, 0..left.len(), right, 0..right.len());
+    hook.into_inner().into_ops()
+}
+
+/// Patch for one hunk: the first `min(deleted, inserted)` elements are paired
+/// positionally and diffed recursively; the rest become removes or adds.
+/// Leftovers (higher indices) are emitted before the paired diffs.
+fn hunk_patch(
+    hunk: &DiffOp,
+    left: &[Value],
+    right: &[Value],
+    item_options: DiffOptions,
+    path_pointer: &Spath,
+    patch_ops: &Patch,
+) -> (Patch, DiffErrorSummary) {
+    let (old, new) = (hunk.old_range(), hunk.new_range());
+    let paired = old.len().min(new.len());
+    let leftovers = leftover_patch(
+        left.len(),
+        old.start + paired..old.end,
+        &right[new.start + paired..new.end],
+        path_pointer,
+    );
+    let recursed = (0..paired)
+        .map(|i| {
+            diff_recursive(
+                &left[old.start + i],
+                &right[new.start + i],
+                item_options,
+                &item_path(path_pointer, old.start + i),
+                patch_ops,
+            )
+        })
+        .fold((Patch::default(), DiffErrorSummary::empty()), |acc, p| {
+            (acc.0 + p.0, acc.1 + p.1)
+        });
+    (leftovers + recursed.0, recursed.1)
+}
+
+/// Unpaired part of a hunk: removes `removed` (descending), or inserts
+/// `inserted` at `removed.start`. Inserts at the end of `left` (`len_left`)
+/// use `-` in order; elsewhere they go to the same index in reverse order.
+fn leftover_patch(
+    len_left: usize,
+    removed: Range<usize>,
+    inserted: &[Value],
+    path_pointer: &Spath,
+) -> Patch {
+    let removals = removed.clone().rev().fold(Patch::default(), |acc, i| {
+        acc + remove_at(item_path(path_pointer, i))
+    });
+    let additions = if removed.start == len_left {
+        let append = append_path(path_pointer);
+        inserted
+            .iter()
+            .fold(Patch::default(), |acc, el| acc + add_at(append.clone(), el))
+    } else {
+        let at = item_path(path_pointer, removed.start);
+        inserted
+            .iter()
+            .rev()
+            .fold(Patch::default(), |acc, el| acc + add_at(at.clone(), el))
+    };
+    removals + additions
 }
 
 /// Options for array items: the `items` schema when present, else no schema.
@@ -1553,6 +1653,42 @@ mod tests {
         check!(patch_ops.len() == 2);
         check!(patch_ops == expected_patch);
     }
+
+    #[test]
+    fn diff_array_indexed_should_handle_pure_remove_from_middle() {
+        let left = serde_json::json!({"thresholds": [
+            {"duration": 0},
+            {"duration": 360},
+            {"duration": 360},
+            {"duration": 600},
+            {"duration": 1800},
+            {"duration": 3600},
+        ]});
+        let right = serde_json::json!({"thresholds": [
+            {"duration": 0},
+            {"duration": 360},
+            {"duration": 600},
+            {"duration": 1800},
+            {"duration": 3600},
+        ]});
+
+        let (patch_ops, diff_errors) = diff_recursive(
+            &left,
+            &right,
+            DiffOptions::new()
+                .with_granularity(DiffGranularity::Granular)
+                .with_array_algorithm(ArrayAlgorithm::Myers),
+            &Spath::default(),
+            &Patch::default(),
+        );
+
+        let expected_patch = Patch::new(vec![PatchOp::remove(path("/thresholds/2"))]);
+
+        check!(diff_errors.is_empty() == true);
+        check!(patch_ops.len() == 1);
+        check!(patch_ops == expected_patch);
+    }
+
     /// Schema with `items` keyed by the composite `["region", "code"]`.
     fn composite_schema() -> serde_json::Value {
         serde_json::json!({
@@ -1741,5 +1877,198 @@ mod tests {
         let reparsed: Vec<PatchOp> =
             serde_json::from_str(&serde_json::to_string(&patch).unwrap()).unwrap();
         check!(crate::patch::apply(&left, &reparsed).unwrap() == right);
+    }
+
+    /// Diffs with Myers + `granularity`, asserts no errors and that the patch
+    /// applies to `left` yielding `right`.
+    fn myers_diff_with(left: &Value, right: &Value, granularity: DiffGranularity) -> Patch {
+        let options = DiffOptions::new()
+            .with_granularity(granularity)
+            .with_array_algorithm(ArrayAlgorithm::Myers);
+        let (patch, errors) =
+            diff_recursive(left, right, options, &Spath::default(), &Patch::default());
+        check!(errors.is_empty());
+        check!(crate::patch::apply(left, &patch).unwrap() == *right);
+        patch
+    }
+
+    /// [`myers_diff_with`] using `Granular`.
+    fn myers_diff(left: &Value, right: &Value) -> Patch {
+        myers_diff_with(left, right, DiffGranularity::Granular)
+    }
+
+    /// Legacy (default) diff of `left` against `right`.
+    fn legacy_diff(left: &Value, right: &Value) -> Patch {
+        diff_recursive(
+            left,
+            right,
+            DiffOptions::new(),
+            &Spath::default(),
+            &Patch::default(),
+        )
+        .0
+    }
+
+    /// Wraps durations as `{"thresholds": [{"duration": n}, ..]}`.
+    fn thresholds(durations: &[u64]) -> Value {
+        let items: Vec<Value> = durations
+            .iter()
+            .map(|d| serde_json::json!({ "duration": d }))
+            .collect();
+        serde_json::json!({ "thresholds": items })
+    }
+
+    #[test]
+    fn myers_should_remove_from_middle_in_compact_too() {
+        let left = thresholds(&[0, 360, 360, 600, 1800, 3600]);
+        let right = thresholds(&[0, 360, 600, 1800, 3600]);
+
+        let patch = myers_diff_with(&left, &right, DiffGranularity::Compact);
+
+        check!(patch == Patch::new(vec![PatchOp::remove(path("/thresholds/2"))]));
+    }
+
+    #[test]
+    fn myers_should_emit_two_separate_inserts() {
+        let left = thresholds(&[0, 360, 600, 1800, 3600]);
+        let right = thresholds(&[0, 360, 360, 600, 1800, 1800, 3600]);
+
+        let patch = myers_diff(&left, &right);
+
+        check!(
+            patch
+                == Patch::new(vec![
+                    PatchOp::add(path("/thresholds/3"), serde_json::json!({"duration": 1800})),
+                    PatchOp::add(path("/thresholds/2"), serde_json::json!({"duration": 360})),
+                ])
+        );
+    }
+
+    #[test]
+    fn myers_should_handle_duplicates() {
+        let left = serde_json::json!(["a", "a", "a"]);
+
+        check!(
+            myers_diff(&left, &serde_json::json!(["a", "a"]))
+                == Patch::new(vec![PatchOp::remove(path("/2"))])
+        );
+        check!(
+            myers_diff(&left, &serde_json::json!(["a", "a", "a", "a"]))
+                == Patch::new(vec![PatchOp::add(path("/-"), serde_json::json!("a"))])
+        );
+    }
+
+    #[test]
+    fn myers_should_match_legacy_for_pure_append_prepend_truncate() {
+        let cases = [
+            (
+                serde_json::json!(["a", "b"]),
+                serde_json::json!(["a", "b", "c", "d"]),
+            ),
+            (
+                serde_json::json!(["c", "d"]),
+                serde_json::json!(["a", "b", "c", "d"]),
+            ),
+            (
+                serde_json::json!(["a", "b", "c", "d"]),
+                serde_json::json!(["a", "b"]),
+            ),
+        ];
+        for (left, right) in &cases {
+            check!(myers_diff(left, right) == legacy_diff(left, right));
+        }
+    }
+
+    #[test]
+    fn myers_should_remove_from_front_in_descending_order() {
+        let patch = myers_diff(
+            &serde_json::json!(["a", "b", "c", "d"]),
+            &serde_json::json!(["c", "d"]),
+        );
+
+        check!(
+            patch
+                == Patch::new(vec![
+                    PatchOp::remove(path("/1")),
+                    PatchOp::remove(path("/0")),
+                ])
+        );
+    }
+
+    #[test]
+    fn myers_should_remove_several_from_middle_in_descending_order() {
+        let patch = myers_diff(
+            &serde_json::json!(["a", "b", "c", "d", "e"]),
+            &serde_json::json!(["a", "e"]),
+        );
+
+        check!(
+            patch
+                == Patch::new(vec![
+                    PatchOp::remove(path("/3")),
+                    PatchOp::remove(path("/2")),
+                    PatchOp::remove(path("/1")),
+                ])
+        );
+    }
+
+    #[test]
+    fn myers_should_replace_field_of_changed_element_between_equals() {
+        let patch = myers_diff(
+            &serde_json::json!([{"d": 1}, {"d": 2}, {"d": 3}]),
+            &serde_json::json!([{"d": 1}, {"d": 9}, {"d": 3}]),
+        );
+
+        check!(patch == Patch::new(vec![PatchOp::replace(path("/1/d"), serde_json::json!(9))]));
+    }
+
+    #[test]
+    fn myers_should_propagate_to_nested_arrays() {
+        let patch = myers_diff(
+            &serde_json::json!({"a": [[1, 2, 2, 3]]}),
+            &serde_json::json!({"a": [[1, 2, 3]]}),
+        );
+
+        check!(patch == Patch::new(vec![PatchOp::remove(path("/a/0/2"))]));
+    }
+
+    #[test]
+    fn both_algorithms_should_yield_right_when_applied() {
+        let cases = [
+            (
+                thresholds(&[0, 360, 360, 600, 1800, 3600]),
+                thresholds(&[0, 360, 600, 1800, 3600]),
+            ),
+            (
+                thresholds(&[0, 360, 600, 1800, 3600]),
+                thresholds(&[0, 360, 360, 600, 1800, 1800, 3600]),
+            ),
+            (
+                serde_json::json!(["a", "b", "c"]),
+                serde_json::json!(["a", "x", "c", "d"]),
+            ),
+            (
+                serde_json::json!(["a", "b", "c", "d"]),
+                serde_json::json!(["c", "d"]),
+            ),
+            (
+                serde_json::json!(["c", "d"]),
+                serde_json::json!(["a", "b", "c", "d"]),
+            ),
+            (
+                serde_json::json!(["a", "b", "c", "d", "e"]),
+                serde_json::json!(["x", "c", "y", "z"]),
+            ),
+            (serde_json::json!([1, 2, 3]), serde_json::json!([])),
+            (serde_json::json!([]), serde_json::json!([1, 2, 3])),
+            (
+                serde_json::json!({"a": [[1, 2, 2, 3], [4]]}),
+                serde_json::json!({"a": [[0, 1, 3], [4, 4]]}),
+            ),
+        ];
+        for (left, right) in &cases {
+            check!(crate::patch::apply(left, &legacy_diff(left, right)).unwrap() == *right);
+            myers_diff(left, right);
+        }
     }
 }
